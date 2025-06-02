@@ -191,6 +191,11 @@ LlamaDistributor/
 - 用户指定分层边界
 - 适用于特定优化需求
 
+**single_device（单设备分层）**
+- 在同一设备上进行分层推理
+- 适用于测试分层效果、内存优化和调试分层逻辑
+- 支持自定义分层点和均匀分层
+
 ### 配置示例
 
 ```python
@@ -208,6 +213,21 @@ strategy = PartitionStrategy(
     strategy_type="custom",
     custom_boundaries=[(0, 15), (16, 31)],
     target_devices=["cuda:0", "cuda:1"]
+)
+
+# 单设备分层 - 均匀分层
+strategy = PartitionStrategy(
+    num_partitions=4,
+    strategy_type="single_device",
+    single_device="cuda:0"
+)
+
+# 单设备分层 - 自定义分层点
+strategy = PartitionStrategy(
+    num_partitions=3,
+    strategy_type="single_device",
+    single_device="cuda:0",
+    custom_boundaries=[(0, 10), (11, 21), (22, 31)]
 )
 ```
 

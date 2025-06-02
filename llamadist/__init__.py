@@ -10,10 +10,11 @@ LlamaDistributor: 基于QLLM的Llama模型分层与分布式推理系统
 现在包含从QLLM提取的核心分片算法，无需依赖QLLM。
 """
 
-from .partitioner.strategies import PartitionStrategy
+from .partitioner.strategies import PartitionStrategy, StrategyType
 from .partitioner.splitter import LlamaPartitioner
 from .submodels.manager import SubModelManager
 from .inference.coordinator import DistributedInference
+from .inference.single_device_coordinator import SingleDeviceInference
 from .utils.config import LlamaDistConfig
 
 # 导出核心模型类
@@ -30,6 +31,7 @@ __author__ = "LlamaDistributor Team"
 __all__ = [
     # 分层相关
     "PartitionStrategy",
+    "StrategyType",
     "LlamaPartitioner",
     
     # 子模型管理
@@ -37,6 +39,9 @@ __all__ = [
     
     # 分布式推理
     "DistributedInference",
+    
+    # 单设备分层推理
+    "SingleDeviceInference",
     
     # 配置管理
     "LlamaDistConfig",

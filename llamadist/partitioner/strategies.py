@@ -19,6 +19,7 @@ class StrategyType(Enum):
     COMPUTE = "compute"           # 按计算量分层
     MIXED = "mixed"               # 混合策略
     CUSTOM = "custom"             # 自定义策略
+    SINGLE_DEVICE = "single_device"  # 单设备分层策略
 
 
 @dataclass
@@ -77,8 +78,14 @@ class PartitionStrategy:
         if not 0 <= self.load_balance_factor <= 1:
             raise ValueError("负载均衡因子必须在0-1之间")
         
-        if len(self.target_devices) != self.num_partitions:
-            raise ValueError("目标设备数量必须等于分层数量")
+        # 对于单设备策略，所有分层都在同一设备上
+        if self.strategy_type == StrategyType.SINGLE_DEVICE:
+            single_device = self.kwargs.get('single_device', 'cuda:0')
+            self.target_devices = [single_device] * self.num_partitions
+        else:
+            # 其他策略需要验证设备数量匹配
+            if len(self.target_devices) != self.num_partitions:
+                raise ValueError("目标设备数量必须等于分层数量")
     
     def create_partitions(self, model_info: Dict) -> List[PartitionConfig]:
         """
@@ -100,6 +107,8 @@ class PartitionStrategy:
             return self._create_mixed_partitions(model_info)
         elif self.strategy_type == StrategyType.CUSTOM:
             return self._create_custom_partitions(model_info)
+        elif self.strategy_type == StrategyType.SINGLE_DEVICE:
+            return self._create_single_device_partitions(model_info)
         else:
             raise ValueError(f"不支持的策略类型: {self.strategy_type}")
     
@@ -398,6 +407,73 @@ class PartitionStrategy:
                     return False
         
         return True
+    
+    def _create_single_device_partitions(self, model_info) -> List[PartitionConfig]:
+        """
+        创建单设备分层配置
+        
+        在同一设备上将模型分成多个子模型，可以指定分层点
+        适用于：
+        1. 测试分层效果
+        2. 内存优化
+        3. 分析不同层的计算开销
+        4. 调试分层逻辑
+        """
+        num_layers = model_info.num_layers
+        
+        # 获取自定义分层点或使用默认分层
+        custom_boundaries = self.kwargs.get('custom_boundaries')
+        single_device = self.kwargs.get('single_device', 'cuda:0')
+        
+        if custom_boundaries:
+            # 使用自定义分层边界
+            partitions = []
+            for i, (start, end) in enumerate(custom_boundaries):
+                if start < 0 or end >= num_layers or start > end:
+                    raise ValueError(f"无效的分层边界: ({start}, {end})，模型共有{num_layers}层")
+                
+                partition = PartitionConfig(
+                    layer_start=start,
+                    layer_end=end,
+                    device=single_device
+                )
+                partitions.append(partition)
+            
+            # 验证分层覆盖的完整性
+            covered_layers = set()
+            for partition in partitions:
+                for layer_idx in range(partition.layer_start, partition.layer_end + 1):
+                    if layer_idx in covered_layers:
+                        raise ValueError(f"层 {layer_idx} 被多个分层覆盖")
+                    covered_layers.add(layer_idx)
+            
+            expected_layers = set(range(num_layers))
+            if covered_layers != expected_layers:
+                missing_layers = expected_layers - covered_layers
+                raise ValueError(f"缺少层的覆盖: {missing_layers}")
+            
+            return partitions
+        else:
+            # 使用均匀分层作为默认
+            layers_per_partition = num_layers // self.num_partitions
+            remainder = num_layers % self.num_partitions
+            
+            partitions = []
+            current_layer = 0
+            
+            for i in range(self.num_partitions):
+                # 分配层数，余数分配给前几个分层
+                partition_layers = layers_per_partition + (1 if i < remainder else 0)
+                
+                partition = PartitionConfig(
+                    layer_start=current_layer,
+                    layer_end=current_layer + partition_layers - 1,
+                    device=single_device
+                )
+                partitions.append(partition)
+                current_layer += partition_layers
+            
+            return partitions
     
     def get_summary(self) -> Dict:
         """
