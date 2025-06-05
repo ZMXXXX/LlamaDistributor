@@ -66,7 +66,7 @@ class LlamaModelAnalyzer:
         self.model = None
         self.model_info = None
     
-    def load_model(self, device: str = "cpu") -> nn.Module:
+    def load_model(self, device: str = None) -> nn.Module:
         """
         加载模型
         
@@ -80,6 +80,10 @@ class LlamaModelAnalyzer:
             return self.model
         
         try:
+            # 自动检测设备
+            if device is None:
+                device = "cuda:0" if torch.cuda.is_available() else "cpu"
+            
             if self.model_path:
                 # 从路径加载模型
                 self.model = LlamaForCausalLMSeq.from_pretrained(
@@ -103,7 +107,7 @@ class LlamaModelAnalyzer:
             # 如果加载失败，尝试创建一个默认配置的模型用于分析
             return self._create_default_model(device)
     
-    def _create_default_model(self, device: str = "cpu") -> nn.Module:
+    def _create_default_model(self, device: str = None) -> nn.Module:
         """
         创建默认配置的模型用于分析
         
@@ -113,6 +117,9 @@ class LlamaModelAnalyzer:
         Returns:
             nn.Module: 默认模型
         """
+        if device is None:
+            device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        
         default_config = {
             "vocab_size": 32000,
             "hidden_size": 4096,
@@ -137,7 +144,7 @@ class LlamaModelAnalyzer:
     
     def analyze_model(self, 
                      sample_input_shape: Tuple[int, int] = (1, 512),
-                     device: str = "cpu",
+                     device: str = None,
                      detailed: bool = True) -> ModelInfo:
         """
         分析模型结构和资源需求
@@ -151,6 +158,10 @@ class LlamaModelAnalyzer:
             ModelInfo: 模型分析结果
         """
         print("开始分析模型...")
+        
+        # 自动检测设备
+        if device is None:
+            device = "cuda:0" if torch.cuda.is_available() else "cpu"
         
         # 加载模型
         model = self.load_model(device)

@@ -11,6 +11,7 @@ import sys
 import time
 from pathlib import Path
 from transformers import LlamaTokenizer
+import torch.nn.functional as F
 
 # 添加项目路径
 project_root = Path(__file__).parent
@@ -25,9 +26,134 @@ from llamadist import (
 from llamadist.inference.coordinator import GenerationConfig
 
 
+def test_baseline_inference(model_path: str, tokenizer, device: str) -> dict:
+    """
+    测试原始模型（不分层）的推理性能作为baseline
+    
+    Args:
+        model_path: 模型路径
+        tokenizer: 分词器
+        device: 设备
+        
+    Returns:
+        dict: 测试结果
+    """
+    from llamadist.models.llama_seq import LlamaForCausalLMSeq
+    
+    print("   加载原始模型...")
+    start_time = time.time()
+    
+    # 直接加载完整模型
+    model = LlamaForCausalLMSeq.from_pretrained(
+        model_path,
+        device_map=device,
+        torch_dtype=torch.float16
+    )
+    model.eval()
+    
+    load_time = time.time() - start_time
+    print(f"   原始模型加载完成，耗时: {load_time:.2f}秒")
+    
+    # 测试推理性能
+    print("   测试推理性能...")
+    test_prompts = [
+        "The future of artificial intelligence is",
+        "In a world where technology advances rapidly,"
+    ]
+    
+    # 生成参数
+    temperature = 0.8
+    top_p = 0.9
+    do_sample = True
+    
+    total_inference_time = 0
+    total_generation_time = 0
+    total_tokens = 0
+    
+    for prompt in test_prompts:
+        # 编码输入
+        input_ids = tokenizer.encode(prompt, return_tensors="pt", add_special_tokens=True)
+        input_ids = input_ids.to(device)
+        
+        # 测试前向传播
+        start_time = time.time()
+        with torch.no_grad():
+            outputs = model(input_ids)
+        inference_time = time.time() - start_time
+        
+        # 测试文本生成
+        start_time = time.time()
+        with torch.no_grad():
+            # 实现简单的自回归生成
+            current_ids = input_ids.clone()
+            max_new_tokens = 100
+            
+            for _ in range(max_new_tokens):
+                # 前向传播获取logits
+                outputs = model(current_ids)
+                logits = outputs.logits
+                
+                # 获取下一个token（使用贪心解码）
+                next_token_logits = logits[:, -1, :]
+                
+                # 应用temperature和top_p
+                if temperature != 1.0:
+                    next_token_logits = next_token_logits / temperature
+                
+                # 简单采样：使用概率最高的token
+                if do_sample:
+                    probs = F.softmax(next_token_logits, dim=-1)
+                    next_token = torch.multinomial(probs, num_samples=1)
+                else:
+                    next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
+                
+                # 检查是否遇到结束token
+                if next_token.item() == tokenizer.eos_token_id:
+                    break
+                
+                # 添加新token
+                current_ids = torch.cat([current_ids, next_token], dim=-1)
+            
+            generated_ids = current_ids
+        generation_time = time.time() - start_time
+        
+        # 解码生成的文本
+        generated_text = tokenizer.decode(generated_ids[0][len(input_ids[0]):], skip_special_tokens=True)
+        generated_tokens = len(generated_ids[0]) - len(input_ids[0])
+        
+        total_inference_time += inference_time
+        total_generation_time += generation_time
+        total_tokens += generated_tokens
+        
+        print(f"     提示: {prompt}")
+        print(f"     生成: {generated_text}")
+        print(f"     推理时间: {inference_time:.4f}秒, 生成时间: {generation_time:.4f}秒")
+    
+    # 计算平均指标
+    avg_inference_time = total_inference_time / len(test_prompts)
+    avg_generation_time = total_generation_time / len(test_prompts)
+    tokens_per_second = total_tokens / total_generation_time if total_generation_time > 0 else 0
+    
+    # 清理内存
+    del model
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    
+    return {
+        "name": "Baseline (不分层)",
+        "num_partitions": 1,  # 不分层，算作1个分区
+        "partition_time": 0,  # 不需要分层时间
+        "load_time": load_time,
+        "avg_inference_time": avg_inference_time,
+        "avg_generation_time": avg_generation_time,
+        "total_tokens": total_tokens,
+        "tokens_per_second": tokens_per_second
+    }
+
+
 def test_real_model():
     """使用真实模型进行单设备分层推理测试"""
-    print("🍔 LlamaDistributor - Llama-2-7B 单设备分层推理测试")
+    print("LlamaDistributor - Llama-2-7B 单设备分层推理测试")
     print("=" * 60)
     
     # 模型路径
@@ -40,7 +166,7 @@ def test_real_model():
     
     # 检查模型路径是否存在
     if not Path(model_path).exists():
-        print(f"❌ 错误：模型路径不存在: {model_path}")
+        print(f"错误：模型路径不存在: {model_path}")
         print("请确保Llama-2-7B模型已下载到指定路径")
         return False
     
@@ -61,7 +187,7 @@ def test_real_model():
         partitioner = LlamaPartitioner(model_path=model_path)
         
         print("   分析模型结构...")
-        model_info = partitioner.analyze_model(detailed=False)
+        model_info = partitioner.analyze_model(detailed=False, device=device)
         print(f"   模型层数: {model_info.num_layers}")
         print(f"   隐藏维度: {model_info.hidden_size}")
         print(f"   总参数: {model_info.total_params:,}")
@@ -70,6 +196,27 @@ def test_real_model():
         print("\n" + "="*60)
         print("第二阶段：测试不同分层策略")
         print("="*60)
+        
+        results = []
+        
+        # 先测试baseline（不分层）
+        print(f"\n测试策略: Baseline (不分层)")
+        print("-" * 40)
+        
+        try:
+            baseline_result = test_baseline_inference(
+                model_path=model_path,
+                tokenizer=tokenizer,
+                device=device
+            )
+            results.append(baseline_result)
+            print(f"   Baseline测试完成")
+        except Exception as e:
+            print(f"   Baseline测试失败: {e}")
+            results.append({
+                "name": "Baseline (不分层)",
+                "error": str(e)
+            })
         
         # 测试不同的分层策略
         strategies_to_test = [
@@ -87,7 +234,7 @@ def test_real_model():
                     num_partitions=3,
                     strategy_type=StrategyType.SINGLE_DEVICE,
                     single_device=device,
-                    custom_boundaries=[(0, 10), (11, 21), (22, 31)]
+                    custom_boundaries=[(0, 8), (9, 21), (22, 31)]
                 )
             },
             {
@@ -100,10 +247,8 @@ def test_real_model():
             }
         ]
         
-        results = []
-        
         for test_config in strategies_to_test:
-            print(f"\n🧪 测试策略: {test_config['name']}")
+            print(f"\n测试策略: {test_config['name']}")
             print("-" * 40)
             
             try:
@@ -131,7 +276,7 @@ def test_real_model():
                 inference_engine = SingleDeviceInference(
                     submodels=submodels,
                     generation_config=GenerationConfig(
-                        max_new_tokens=30,
+                        max_new_tokens=100,
                         temperature=0.8,
                         top_p=0.9,
                         do_sample=True,
@@ -176,7 +321,7 @@ def test_real_model():
                     total_tokens += generated_tokens
                     
                     print(f"     提示: {prompt}")
-                    print(f"     生成: {generated_text[:50]}{'...' if len(generated_text) > 50 else ''}")
+                    print(f"     生成: {generated_text}")
                     print(f"     推理时间: {inference_time:.4f}秒, 生成时间: {generation_time:.4f}秒")
                 
                 # 获取统计信息
@@ -192,7 +337,7 @@ def test_real_model():
                     "tokens_per_second": stats.get('tokens_per_second', 0)
                 })
                 
-                print(f"   ✅ 测试完成")
+                print(f"   测试完成")
                 
                 # 清理内存
                 del submodels
@@ -201,7 +346,7 @@ def test_real_model():
                     torch.cuda.empty_cache()
                 
             except Exception as e:
-                print(f"   ❌ 测试失败: {e}")
+                print(f"   测试失败: {e}")
                 results.append({
                     "name": test_config['name'],
                     "error": str(e)
@@ -217,26 +362,50 @@ def test_real_model():
         
         for result in results:
             if 'error' not in result:
+                # 处理baseline和分层结果的不同字段
+                partition_time = result.get('partition_time', 0)
+                partition_time_str = f"{partition_time:.2f}s" if partition_time > 0 else "N/A"
+                
+                # 获取生成速度
+                tokens_per_second = result.get('tokens_per_second', 0)
+                if tokens_per_second == 0 and 'avg_generation_time' in result and result['avg_generation_time'] > 0:
+                    # 对于baseline，从总token数和生成时间计算速度
+                    tokens_per_second = result['total_tokens'] / result['avg_generation_time']
+                
                 print(f"{result['name']:<15} {result['num_partitions']:<8} "
-                      f"{result['partition_time']:.2f}s{'':<6} {result['avg_inference_time']:.4f}s{'':<4} "
-                      f"{result['tokens_per_second']:.1f}t/s{'':<4}")
+                      f"{partition_time_str:<12} {result['avg_inference_time']:.4f}s{'':<4} "
+                      f"{tokens_per_second:.1f}t/s{'':<4}")
             else:
                 print(f"{result['name']:<15} {'失败':<8} {result['error'][:40]}")
+        
+        # 分析性能提升
+        baseline_result = next((r for r in results if r.get('name') == 'Baseline (不分层)' and 'error' not in r), None)
+        if baseline_result:
+            print(f"\n与Baseline对比分析:")
+            print("-" * 50)
+            
+            for result in results:
+                if 'error' not in result and result.get('name') != 'Baseline (不分层)':
+                    speedup = baseline_result['avg_inference_time'] / result['avg_inference_time']
+                    if speedup > 1:
+                        print(f"  {result['name']}: {speedup:.2f}x 加速")
+                    else:
+                        print(f"  {result['name']}: {1/speedup:.2f}x 变慢")
         
         # 找出最佳策略
         successful_results = [r for r in results if 'error' not in r]
         if successful_results:
             best_strategy = min(successful_results, key=lambda x: x['avg_inference_time'])
-            print(f"\n🏆 最佳策略: {best_strategy['name']} (推理时间: {best_strategy['avg_inference_time']:.4f}秒)")
+            print(f"\n最佳策略: {best_strategy['name']} (推理时间: {best_strategy['avg_inference_time']:.4f}秒)")
         
         print("\n" + "="*60)
-        print("✅ 所有测试完成!")
+        print("所有测试完成!")
         print("="*60)
         
         return True
         
     except Exception as e:
-        print(f"\n❌ 测试过程中出现错误: {e}")
+        print(f"\n测试过程中出现错误: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -335,14 +504,14 @@ def main():
             success = test_real_model()
             
         if success:
-            print("\n🎉 测试完成！单设备分层推理功能正常工作。")
+            print("\n测试完成！单设备分层推理功能正常工作。")
         else:
-            print("\n❌ 测试未完全成功，请检查错误信息。")
+            print("\n测试未完全成功，请检查错误信息。")
             
     except KeyboardInterrupt:
-        print("\n\n⏹️  测试被用户中断")
+        print("\n\n测试被用户中断")
     except Exception as e:
-        print(f"\n❌ 程序执行出错: {e}")
+        print(f"\n程序执行出错: {e}")
 
 
 if __name__ == "__main__":

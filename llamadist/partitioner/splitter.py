@@ -329,7 +329,7 @@ class LlamaPartitioner:
         self.original_model = self.analyzer.load_model(device)
         return self.original_model
     
-    def analyze_model(self, detailed: bool = True) -> ModelInfo:
+    def analyze_model(self, detailed: bool = True, device: str = None) -> ModelInfo:
         """
         分析模型结构
         
@@ -339,7 +339,7 @@ class LlamaPartitioner:
         Returns:
             ModelInfo: 模型分析结果
         """
-        return self.analyzer.analyze_model(detailed=detailed)
+        return self.analyzer.analyze_model(detailed=detailed, device=device)
     
     def partition(
         self, 
