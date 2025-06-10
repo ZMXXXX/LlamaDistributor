@@ -56,8 +56,8 @@ class SingleDeviceInference:
         
         # 性能统计
         self.stats = {
-            'total_inference_time': 0.0,
-            'token_generation_time': 0.0,
+            'time_to_first_token': 0.0,
+            'token_decode_time': 0.0,
             'layer_processing_time': {},  # 每层的处理时间
             'memory_usage': {},           # 每层的内存使用
             'total_tokens_generated': 0,
@@ -116,8 +116,6 @@ class SingleDeviceInference:
         Returns:
             Dict: 包含logits、hidden_states和past_key_values的字典
         """
-        start_time = time.time()
-        
         # 将输入移动到目标设备
         input_ids = input_ids.to(self.device)
         if attention_mask is not None:
@@ -230,8 +228,7 @@ class SingleDeviceInference:
             }
         
         # 更新统计信息
-        total_time = time.time() - start_time
-        self.stats['total_inference_time'] += total_time
+   
         self.stats['inference_count'] += 1
         self.stats['layer_processing_time'].update(layer_stats)
         
@@ -346,6 +343,7 @@ class SingleDeviceInference:
         unfinished_sequences = torch.ones(batch_size, dtype=torch.long, device=self.device)
         
         # 记录生成开始时间
+        is_first_token = True
         generation_start_time = time.time()
         
         for step in range(input_ids.shape[1], max_length):
@@ -408,6 +406,10 @@ class SingleDeviceInference:
             if config.use_cache:
                 past_key_values = outputs['past_key_values']
             
+            if is_first_token:
+                self.stats['time_to_first_token'] = time.time() - generation_start_time
+                is_first_token = False
+
             # 检查是否有序列完成
             if config.eos_token_id is not None:
                 unfinished_sequences = unfinished_sequences.mul((next_tokens != config.eos_token_id).long())
@@ -419,7 +421,7 @@ class SingleDeviceInference:
         # 更新统计信息
         generation_time = time.time() - generation_start_time
         tokens_generated = generated_tokens.shape[1] - input_ids.shape[1]
-        self.stats['token_generation_time'] += generation_time
+        self.stats['token_decode_time'] += generation_time
         self.stats['total_tokens_generated'] += tokens_generated * batch_size
         
         return generated_tokens
@@ -464,21 +466,16 @@ class SingleDeviceInference:
     
     def get_stats(self) -> Dict[str, Any]:
         """获取性能统计信息"""
-        avg_inference_time = (
-            self.stats['total_inference_time'] / self.stats['inference_count']
-            if self.stats['inference_count'] > 0 else 0
-        )
         
-        avg_token_generation_time = (
-            self.stats['token_generation_time'] / self.stats['total_tokens_generated']
+        avg_token_decode_time = (
+            self.stats['token_decode_time'] / self.stats['total_tokens_generated']
             if self.stats['total_tokens_generated'] > 0 else 0
         )
         
         return {
             **self.stats,
-            'avg_inference_time': avg_inference_time,
-            'avg_token_generation_time': avg_token_generation_time,
-            'tokens_per_second': 1.0 / avg_token_generation_time if avg_token_generation_time > 0 else 0,
+            'avg_token_decode_time': avg_token_decode_time,
+            'tokens_per_second': 1.0 / avg_token_decode_time if avg_token_decode_time > 0 else 0,
             'device': self.device,
             'num_submodels': len(self.submodels)
         }
@@ -512,8 +509,8 @@ class SingleDeviceInference:
     def reset_stats(self):
         """重置统计信息"""
         self.stats = {
-            'total_inference_time': 0.0,
-            'token_generation_time': 0.0,
+            'time_to_first_token': 0.0,
+            'token_decode_time': 0.0,
             'layer_processing_time': {},
             'memory_usage': {},
             'total_tokens_generated': 0,
@@ -532,7 +529,6 @@ class SingleDeviceInference:
         print(f"设备: {self.device}")
         print(f"子模型数量: {len(self.submodels)}")
         print(f"总推理次数: {stats['inference_count']}")
-        print(f"平均推理时间: {stats['avg_inference_time']:.4f}秒")
         print(f"生成速度: {stats['tokens_per_second']:.2f} tokens/秒")
         
         print("\n分层性能分析:")
