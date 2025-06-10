@@ -7,9 +7,13 @@ import torch
 import sys
 import time
 import argparse
+import os
+from datetime import datetime
 from pathlib import Path
 from transformers import LlamaTokenizer, LlamaForCausalLM
 import torch.nn.functional as F
+import matplotlib
+from tabulate import tabulate
 
 # 添加项目路径
 project_root = Path(__file__).parent
@@ -25,8 +29,12 @@ from llamadist.inference.coordinator import GenerationConfig
 
 # 全局测试参数
 test_prompts = [
-    "Llama is a large language model",
-    "In a world full of love,"
+    "Llama is a large language model,",
+    "USA is a country in North America,",
+    "The capital of USA is Washington, D.C.,",
+    "write a poem about LOVE",
+    "The answer of 1+1 is",
+    "give me a joke"
 ]
 
 # 全局生成参数（作为默认值）
@@ -147,9 +155,7 @@ def benchmark_baseline_inference(
     print(f"原始模型加载完成，耗时: {load_time:.2f}秒")
 
     # 初始化性能指标
-    total_inference_time = 0  # 总推理时间
     total_tokens_generated = 0  # 生成的总token数
-    total_prefill_time = 0  # 预填充时间（处理prompt的时间）
     total_decode_time = 0  # 解码时间（逐token生成时间）
     peak_memory_usage = 0  # 峰值内存使用
     first_token_latencies = []  # 每个prompt的首token延迟
@@ -190,6 +196,10 @@ def benchmark_baseline_inference(
                     first_token_latency = token_end_time - prompt_start_time
                     first_token_latencies.append(first_token_latency)
                     first_token_generated = True
+                    
+                    # 立即解码并打印第一个token，用于验证TTFT计算
+                    first_token_text = tokenizer.decode(next_token[0], skip_special_tokens=True)
+                    print(f"    [完整模型] 第一个token '{first_token_text}' 生成完成，TTFT: {first_token_latency*1000:.3f}ms")
 
                 total_tokens_generated += 1
 
@@ -204,8 +214,7 @@ def benchmark_baseline_inference(
         generated_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
 
         # 记录这个prompt的总生成时间（不包含打印时间）
-        generation_end_time = time.time()
-        prompt_generation_time = generation_end_time - generation_start_time
+        prompt_generation_time = time.time() - generation_start_time
         total_generation_time += prompt_generation_time
         
         print(f"\n--- Prompt: {prompt}")
@@ -226,11 +235,11 @@ def benchmark_baseline_inference(
     # 打印结果
     print(f"\n=== 完整模型推理测试结果 ===")
     print(f"模型加载时间: {load_time:.3f}秒")
-    print(f"平均每token解码时间: {average_token_decode_time:.3f}秒")
     print(f"总生成时间: {total_generation_time:.3f}秒")
+    print(f"总解码时间: {total_decode_time:.3f}秒")
     print(f"生成token总数: {total_tokens_generated}")
     print(f"平均吞吐量: {average_throughput:.3f} tokens/秒")
-    print(f"平均每token延迟: {average_latency*1000:.3f}毫秒/token")
+    print(f"平均每token生成延迟: {average_latency*1000:.3f}毫秒/token")
     print(f"平均首token延迟(TTFT): {average_first_token_latency*1000:.3f}毫秒")
     print(f"峰值GPU内存使用: {peak_memory_usage:.3f}MB")
 
@@ -280,6 +289,8 @@ def benchmark_partition_inference(
     print(f"总参数: {model_info.total_params:,}")
     print(f"估计内存: {model_info.total_memory / (1024**3):.2f} GB")
 
+    # 存储所有策略的结果
+    all_results = {}
 
     for strategy in strategies_to_test:
         print(f"按测试策略: {strategy['name']}开始分层...")
@@ -296,13 +307,13 @@ def benchmark_partition_inference(
             
         # 执行分层
         print("执行模型分层...")
-        start_time = time.time()
+        partition_start_time = time.time()
         submodels = partitioner.partition(
             strategy = strategy['strategy'],
             copy_weights = True
         )
 
-        partition_end_time = time.time() - partition_start_time
+        
 
         print("创建分层引擎...")
         
@@ -318,26 +329,17 @@ def benchmark_partition_inference(
             ),
             device = device
         )
+
+        partition_time = time.time() - partition_start_time
         
-        # 初始化性能指标
-        total_tokens_generated = 0  # 生成的总token数
-        total_decode_time = 0  # 解码时间（逐token生成时间）
-        peak_memory_usage = 0  # 峰值内存使用
-        first_token_latencies = []  # 每个prompt的首token延迟
-        total_generation_time = 0 # 总生成时间
 
         for prompt in test_prompts:
-            generation_start_time = time.time()
             generated_text = inference_engine.generate_text(
                 prompt=prompt,
                 tokenizer=tokenizer,
                 return_full_text=False
             )
-            generation_time = time.time() - generation_start_time
-            total_generation_time += generation_time
-
             generated_tokens = len(tokenizer.encode(generated_text))
-            total_tokens_generated += generated_tokens
 
             print(f"\n--- Prompt: {prompt}")
             print(f"Generated: {generated_text}")
@@ -346,19 +348,465 @@ def benchmark_partition_inference(
         stats = inference_engine.get_stats()
 
         
-
         print(f"\n=== 分割模型推理测试结果 ===")
+        print(f"模型分层时间: {partition_time:.3f}秒")
+        print(f"总生成时间: {stats['total_generation_time']:.3f}秒")
         print(f"总解码时间: {stats['token_decode_time']:.3f}秒")
-        print(f"总生成时间: {total_generation_time:.3f}秒")
-        print(f"生成token总数: {total_tokens_generated}")
+        print(f"生成token总数: {stats['total_tokens_generated']}")
         print(f"平均吞吐量: {stats['tokens_per_second']:.3f} tokens/秒")
-        print(f"平均每token延迟: {1/stats['tokens_per_second']*1000:.3f}毫秒")
-        print(f"平均首token延迟(TTFT): {stats['time_to_first_token']*1000:.3f}毫秒")
+        print(f"平均每token生成延迟: {stats['total_generation_time']/stats['total_tokens_generated']*1000:.3f}毫秒/token")
+        print(f"平均首token延迟(TTFT): {stats['total_time_to_first_token']/len(test_prompts)*1000:.3f}毫秒")
+
+        # 存储当前策略的结果
+        strategy_result = {
+            "partition_time": partition_time,
+            "total_generation_time": stats['total_generation_time'],
+            "total_decode_time": stats['token_decode_time'],
+            "total_tokens_generated": stats['total_tokens_generated'],
+            "average_throughput": stats['tokens_per_second'],
+            "average_latency": stats['total_generation_time']/stats['total_tokens_generated'],
+            "average_first_token_latency": stats['total_time_to_first_token']/len(test_prompts),
+            "peak_memory_usage": 0  # 这里可以后续添加内存监控
+        }
+        
+        all_results[strategy['name']] = strategy_result
 
         del submodels
         del inference_engine
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+    
+    return all_results
+
+
+def create_comparison_table(baseline_result: dict, partition_results: dict):
+    """
+    创建完整推理和分割推理的对比表格，并保存到benchmark子文件夹
+    
+    Args:
+        baseline_result: 完整推理的结果字典
+        partition_results: 分割推理的结果字典，包含多个策略的结果
+    """
+    # 创建benchmark文件夹
+    benchmark_dir = Path("benchmark")
+    benchmark_dir.mkdir(exist_ok=True)
+    
+    # 生成时间戳用于文件名
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    try:
+        # 导入tabulate用于创建表格
+        from tabulate import tabulate
+        use_tabulate = True
+    except ImportError:
+        print("未安装tabulate库，将使用简单格式输出")
+        print("请运行: pip install tabulate")
+        use_tabulate = False
+    
+    print("\n" + "="*80)
+    print("性能对比表格")
+    print("="*80)
+    
+    # 定义指标映射
+    metrics = [
+        ("模型加载/分层时间 (秒)", "load_time", "partition_time"),
+        ("总生成时间 (秒)", "total_generation_time", "total_generation_time"),
+        ("总解码时间 (秒)", "total_decode_time", "total_decode_time"),
+        ("生成token总数", "total_tokens_generated", "total_tokens_generated"),
+        ("平均吞吐量 (tokens/秒)", "average_throughput", "average_throughput"),
+        ("平均每token延迟 (毫秒)", "average_latency", "average_latency"),
+        ("平均首token延迟 (毫秒)", "average_first_token_latency", "average_first_token_latency"),
+        ("峰值内存使用 (MB)", "peak_memory_usage", "peak_memory_usage")
+    ]
+    
+    # 准备表格数据
+    headers = ["指标", "完整推理"]
+    for strategy_name in partition_results.keys():
+        headers.append(f"分割推理-{strategy_name}")
+    
+    table_data = []
+    csv_data = [headers]  # 用于保存CSV格式
+    
+    for metric_name, baseline_key, partition_key in metrics:
+        row = [metric_name]
+        
+        # 添加完整推理的值
+        baseline_value = baseline_result.get(baseline_key, 0)
+        if "延迟" in metric_name or "毫秒" in metric_name:
+            # 延迟相关指标转换为毫秒
+            if baseline_key in ["average_latency", "average_first_token_latency"]:
+                baseline_value = baseline_value * 1000
+            row.append(f"{baseline_value:.3f}")
+        elif "吞吐量" in metric_name or "tokens/秒" in metric_name:
+            row.append(f"{baseline_value:.3f}")
+        elif metric_name == "生成token总数":
+            row.append(f"{int(baseline_value)}")
+        else:
+            row.append(f"{baseline_value:.3f}")
+        
+        # 添加分割推理的值
+        for strategy_name, strategy_result in partition_results.items():
+            partition_value = strategy_result.get(partition_key, 0)
+            if "延迟" in metric_name or "毫秒" in metric_name:
+                # 延迟相关指标转换为毫秒
+                if partition_key in ["average_latency", "average_first_token_latency"]:
+                    partition_value = partition_value * 1000
+                row.append(f"{partition_value:.3f}")
+            elif "吞吐量" in metric_name or "tokens/秒" in metric_name:
+                row.append(f"{partition_value:.3f}")
+            elif metric_name == "生成token总数":
+                row.append(f"{int(partition_value)}")
+            else:
+                row.append(f"{partition_value:.3f}")
+        
+        table_data.append(row)
+        csv_data.append(row)
+    
+    # 打印表格到控制台
+    if use_tabulate:
+        table_str = tabulate(table_data, headers=headers, tablefmt="grid")
+        print(table_str)
+    else:
+        _print_simple_table(table_data, headers)
+    
+    # 保存表格到文件
+    table_file = benchmark_dir / f"performance_comparison_{timestamp}.txt"
+    with open(table_file, 'w', encoding='utf-8') as f:
+        f.write("性能对比表格\n")
+        f.write("="*80 + "\n")
+        f.write(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+        
+        if use_tabulate:
+            f.write(table_str)
+        else:
+            # 写入简单格式表格
+            header_line = " | ".join(f"{h:<20}" for h in headers)
+            f.write(header_line + "\n")
+            f.write("-" * len(header_line) + "\n")
+            for row in table_data:
+                row_line = " | ".join(f"{str(cell):<20}" for cell in row)
+                f.write(row_line + "\n")
+    
+    # 保存CSV格式
+    csv_file = benchmark_dir / f"performance_comparison_{timestamp}.csv"
+    with open(csv_file, 'w', encoding='utf-8') as f:
+        for row in csv_data:
+            f.write(",".join(str(cell) for cell in row) + "\n")
+    
+    # 计算并显示性能提升/下降
+    print("\n" + "="*80)
+    print("性能对比分析 (相对于完整推理)")
+    print("="*80)
+    
+    comparison_data = []
+    comparison_headers = ["指标"]
+    for strategy_name in partition_results.keys():
+        comparison_headers.append(f"{strategy_name} (变化%)")
+    
+    key_metrics = [
+        ("平均吞吐量", "average_throughput", "average_throughput", "higher_is_better"),
+        ("平均每token延迟", "average_latency", "average_latency", "lower_is_better"),
+        ("平均首token延迟", "average_first_token_latency", "average_first_token_latency", "lower_is_better"),
+        ("总生成时间", "total_generation_time", "total_generation_time", "lower_is_better")
+    ]
+    
+    for metric_name, baseline_key, partition_key, direction in key_metrics:
+        row = [metric_name]
+        baseline_value = baseline_result.get(baseline_key, 0)
+        
+        for strategy_name, strategy_result in partition_results.items():
+            partition_value = strategy_result.get(partition_key, 0)
+            
+            if baseline_value != 0:
+                change_percent = ((partition_value - baseline_value) / baseline_value) * 100
+                
+                # 根据指标方向确定是改进还是退化
+                if direction == "higher_is_better":
+                    status = "↑" if change_percent > 0 else "↓"
+                else:  # lower_is_better
+                    status = "↓" if change_percent < 0 else "↑"
+                
+                row.append(f"{change_percent:+.2f}% {status}")
+            else:
+                row.append("N/A")
+        
+        comparison_data.append(row)
+    
+    if use_tabulate:
+        comparison_table = tabulate(comparison_data, headers=comparison_headers, tablefmt="grid")
+        print(comparison_table)
+    else:
+        _print_simple_table(comparison_data, comparison_headers)
+    print("\n说明: ↑ 表示性能提升, ↓ 表示性能下降")
+    
+    # 保存性能分析表格
+    analysis_file = benchmark_dir / f"performance_analysis_{timestamp}.txt"
+    with open(analysis_file, 'w', encoding='utf-8') as f:
+        f.write("性能对比分析 (相对于完整推理)\n")
+        f.write("="*80 + "\n")
+        f.write(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+        
+        if use_tabulate:
+            f.write(comparison_table)
+        else:
+            header_line = " | ".join(f"{h:<20}" for h in comparison_headers)
+            f.write(header_line + "\n")
+            f.write("-" * len(header_line) + "\n")
+            for row in comparison_data:
+                row_line = " | ".join(f"{str(cell):<20}" for cell in row)
+                f.write(row_line + "\n")
+        f.write("\n\n说明: ↑ 表示性能提升, ↓ 表示性能下降")
+    
+    # 生成性能对比图表
+    _create_performance_charts(baseline_result, partition_results, benchmark_dir, timestamp)
+    
+    print(f"\n📁 结果已保存到benchmark文件夹:")
+    print(f"   - 性能表格: {table_file}")
+    print(f"   - CSV数据: {csv_file}")
+    print(f"   - 性能分析: {analysis_file}")
+    print(f"   - 性能图表: benchmark/performance_charts_{timestamp}.png")
+
+
+def _print_simple_table(table_data, headers):
+    """打印简单格式表格"""
+    # 打印标题行
+    header = " | ".join(f"{h:<20}" for h in headers)
+    print(header)
+    print("-" * len(header))
+    
+    # 打印数据行
+    for row in table_data:
+        row_line = " | ".join(f"{str(cell):<20}" for cell in row)
+        print(row_line)
+
+
+def _create_performance_charts(baseline_result: dict, partition_results: dict, 
+                              benchmark_dir: Path, timestamp: str):
+    """
+    创建性能对比图表
+    
+    Args:
+        baseline_result: 完整推理结果
+        partition_results: 分割推理结果
+        benchmark_dir: 保存目录
+        timestamp: 时间戳
+    """
+    try:
+        import matplotlib.pyplot as plt
+        import numpy as np
+        
+        # 配置中文字体
+        try:
+            # 尝试设置中文字体
+            import matplotlib.font_manager as fm
+            # 查找系统中的中文字体
+            chinese_fonts = []
+            for font in fm.fontManager.ttflist:
+                # 优先选择真正的中文字体
+                if any(keyword in font.name for keyword in ['Noto Sans CJK', 'SimHei', 'Microsoft YaHei', 'WenQuanYi']):
+                    chinese_fonts.append(font.name)
+            
+            if chinese_fonts:
+                # 去重并选择最佳字体
+                unique_fonts = list(set(chinese_fonts))
+                # 优先级：Noto Sans CJK > SimHei > Microsoft YaHei > WenQuanYi
+                for preferred in ['Noto Sans CJK', 'SimHei', 'Microsoft YaHei', 'WenQuanYi']:
+                    for font in unique_fonts:
+                        if preferred in font:
+                            plt.rcParams['font.sans-serif'] = [font, 'DejaVu Sans']
+                            plt.rcParams['axes.unicode_minus'] = False
+                            use_chinese = True
+                            print(f"使用中文字体: {font}")
+                            break
+                    if 'use_chinese' in locals():
+                        break
+                else:
+                    # 如果没有找到优先字体，使用第一个可用的
+                    plt.rcParams['font.sans-serif'] = [unique_fonts[0], 'DejaVu Sans']
+                    plt.rcParams['axes.unicode_minus'] = False
+                    use_chinese = True
+                    print(f"使用中文字体: {unique_fonts[0]}")
+            else:
+                # 如果没有中文字体，使用英文标签
+                use_chinese = False
+                print("未找到中文字体，将使用英文标签")
+        except:
+            use_chinese = False
+            
+    except ImportError:
+        print("未安装matplotlib，跳过图表生成")
+        print("请运行: pip install matplotlib")
+        return
+    
+    # 准备数据
+    strategies = list(partition_results.keys())
+    strategies.insert(0, "Complete Model" if not use_chinese else "完整推理")
+    
+    # 关键指标
+    throughput_data = [baseline_result.get("average_throughput", 0)]
+    latency_data = [baseline_result.get("average_latency", 0) * 1000]  # 转换为毫秒
+    ttft_data = [baseline_result.get("average_first_token_latency", 0) * 1000]  # 转换为毫秒
+    generation_time_data = [baseline_result.get("total_generation_time", 0)]
+    
+    for strategy_result in partition_results.values():
+        throughput_data.append(strategy_result.get("average_throughput", 0))
+        latency_data.append(strategy_result.get("average_latency", 0) * 1000)
+        ttft_data.append(strategy_result.get("average_first_token_latency", 0) * 1000)
+        generation_time_data.append(strategy_result.get("total_generation_time", 0))
+    
+    # 创建4个子图
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 12))
+    
+    # 设置标题
+    main_title = 'LLM推理性能对比' if use_chinese else 'LLM Inference Performance Comparison'
+    fig.suptitle(main_title, fontsize=16, fontweight='bold')
+    
+    # 颜色设置
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
+    
+    # 1. 平均吞吐量对比
+    bars1 = ax1.bar(strategies, throughput_data, color=colors[:len(strategies)])
+    title1 = '平均吞吐量 (tokens/秒)' if use_chinese else 'Average Throughput (tokens/sec)'
+    ylabel1 = 'Tokens/秒' if use_chinese else 'Tokens/sec'
+    ax1.set_title(title1, fontweight='bold')
+    ax1.set_ylabel(ylabel1)
+    ax1.tick_params(axis='x', rotation=45)
+    # 在柱子上添加数值标签
+    for bar, value in zip(bars1, throughput_data):
+        ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
+                f'{value:.2f}', ha='center', va='bottom')
+    
+    # 2. 平均每token延迟对比
+    bars2 = ax2.bar(strategies, latency_data, color=colors[:len(strategies)])
+    title2 = '平均每token延迟 (毫秒)' if use_chinese else 'Average Token Latency (ms)'
+    ylabel2 = '毫秒' if use_chinese else 'Milliseconds'
+    ax2.set_title(title2, fontweight='bold')
+    ax2.set_ylabel(ylabel2)
+    ax2.tick_params(axis='x', rotation=45)
+    for bar, value in zip(bars2, latency_data):
+        ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
+                f'{value:.1f}', ha='center', va='bottom')
+    
+    # 3. 首token延迟对比
+    bars3 = ax3.bar(strategies, ttft_data, color=colors[:len(strategies)])
+    title3 = '平均首token延迟 TTFT (毫秒)' if use_chinese else 'Average TTFT (ms)'
+    ylabel3 = '毫秒' if use_chinese else 'Milliseconds'
+    ax3.set_title(title3, fontweight='bold')
+    ax3.set_ylabel(ylabel3)
+    ax3.tick_params(axis='x', rotation=45)
+    for bar, value in zip(bars3, ttft_data):
+        ax3.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1,
+                f'{value:.1f}', ha='center', va='bottom')
+    
+    # 4. 总生成时间对比
+    bars4 = ax4.bar(strategies, generation_time_data, color=colors[:len(strategies)])
+    title4 = '总生成时间 (秒)' if use_chinese else 'Total Generation Time (sec)'
+    ylabel4 = '秒' if use_chinese else 'Seconds'
+    ax4.set_title(title4, fontweight='bold')
+    ax4.set_ylabel(ylabel4)
+    ax4.tick_params(axis='x', rotation=45)
+    for bar, value in zip(bars4, generation_time_data):
+        ax4.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01,
+                f'{value:.2f}', ha='center', va='bottom')
+    
+    # 调整布局
+    plt.tight_layout()
+    
+    # 保存图表
+    chart_file = benchmark_dir / f"performance_charts_{timestamp}.png"
+    plt.savefig(chart_file, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    # 创建性能变化百分比图表
+    _create_percentage_change_chart(baseline_result, partition_results, benchmark_dir, timestamp, use_chinese)
+
+
+def _create_percentage_change_chart(baseline_result: dict, partition_results: dict,
+                                   benchmark_dir: Path, timestamp: str, use_chinese: bool):
+    """
+    创建性能变化百分比图表
+    """
+    try:
+        import matplotlib.pyplot as plt
+        import numpy as np
+    except ImportError:
+        return
+    
+    strategies = list(partition_results.keys())
+    
+    # 根据语言设置指标名称
+    if use_chinese:
+        metrics = ["吞吐量", "每token延迟", "首token延迟", "总生成时间"]
+    else:
+        metrics = ["Throughput", "Token Latency", "TTFT", "Generation Time"]
+    
+    # 计算百分比变化
+    changes = {strategy: [] for strategy in strategies}
+    
+    for strategy_name, strategy_result in partition_results.items():
+        # 吞吐量 (higher is better)
+        baseline_throughput = baseline_result.get("average_throughput", 0)
+        partition_throughput = strategy_result.get("average_throughput", 0)
+        throughput_change = ((partition_throughput - baseline_throughput) / baseline_throughput * 100) if baseline_throughput != 0 else 0
+        
+        # 每token延迟 (lower is better, 所以取负值让改进显示为正)
+        baseline_latency = baseline_result.get("average_latency", 0)
+        partition_latency = strategy_result.get("average_latency", 0)
+        latency_change = -((partition_latency - baseline_latency) / baseline_latency * 100) if baseline_latency != 0 else 0
+        
+        # 首token延迟 (lower is better)
+        baseline_ttft = baseline_result.get("average_first_token_latency", 0)
+        partition_ttft = strategy_result.get("average_first_token_latency", 0)
+        ttft_change = -((partition_ttft - baseline_ttft) / baseline_ttft * 100) if baseline_ttft != 0 else 0
+        
+        # 总生成时间 (lower is better)
+        baseline_time = baseline_result.get("total_generation_time", 0)
+        partition_time = strategy_result.get("total_generation_time", 0)
+        time_change = -((partition_time - baseline_time) / baseline_time * 100) if baseline_time != 0 else 0
+        
+        changes[strategy_name] = [throughput_change, latency_change, ttft_change, time_change]
+    
+    # 创建图表
+    fig, ax = plt.subplots(figsize=(12, 8))
+    
+    x = np.arange(len(metrics))
+    width = 0.25
+    colors = ['#ff7f0e', '#2ca02c', '#d62728']
+    
+    for i, (strategy_name, strategy_changes) in enumerate(changes.items()):
+        offset = (i - 1) * width
+        bars = ax.bar(x + offset, strategy_changes, width, label=strategy_name, color=colors[i % len(colors)])
+        
+        # 添加数值标签
+        for bar, value in zip(bars, strategy_changes):
+            height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2, height + (0.5 if height >= 0 else -1),
+                   f'{value:+.1f}%', ha='center', va='bottom' if height >= 0 else 'top')
+    
+    # 设置标签和标题
+    if use_chinese:
+        ax.set_xlabel('性能指标')
+        ax.set_ylabel('性能改进 (%)')
+        ax.set_title('性能改进对比 (相对于完整推理)\n正值表示性能提升，负值表示性能下降', fontweight='bold')
+    else:
+        ax.set_xlabel('Performance Metrics')
+        ax.set_ylabel('Performance Improvement (%)')
+        ax.set_title('Performance Improvement Comparison (vs Complete Model)\nPositive values indicate improvement, negative values indicate degradation', fontweight='bold')
+    
+    ax.set_xticks(x)
+    ax.set_xticklabels(metrics)
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    ax.axhline(y=0, color='black', linestyle='-', alpha=0.3)
+    
+    plt.tight_layout()
+    
+    # 保存图表
+    change_chart_file = benchmark_dir / f"performance_improvement_{timestamp}.png"
+    plt.savefig(change_chart_file, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    print(f"   - 性能改进图: benchmark/performance_improvement_{timestamp}.png")
 
 
 def main(
@@ -370,7 +818,9 @@ def main(
     max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS
 ):
     tokenizer = LlamaTokenizer.from_pretrained(model_path)
-    benchmark_baseline_inference(
+    
+    # 运行完整推理基准测试
+    baseline_result = benchmark_baseline_inference(
         model_path=model_path,
         tokenizer=tokenizer,
         device=device,
@@ -379,6 +829,7 @@ def main(
         do_sample=do_sample,
         max_new_tokens=max_new_tokens
     )
+    
     # 分层策略列表
     strategies_to_test = [
         {
@@ -408,13 +859,21 @@ def main(
         }
     ]
 
-    benchmark_partition_inference(
+    # 运行分层推理基准测试
+    partition_results = benchmark_partition_inference(
         strategies_to_test=strategies_to_test,
         model_path=model_path,
         tokenizer=tokenizer,
         device=device,
         temperature=temperature,
+        top_p=top_p,
+        do_sample=do_sample,
+        max_new_tokens=max_new_tokens
     )
+    
+    # 创建对比表格
+    create_comparison_table(baseline_result, partition_results)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Llama模型分层分割推理性能测试")
@@ -436,6 +895,7 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
+    # 运行测试并自动生成对比表格和图片
     main(
         model_path=args.model_path,
         device=args.device,
@@ -444,3 +904,4 @@ if __name__ == "__main__":
         do_sample=args.do_sample,
         max_new_tokens=args.max_new_tokens
     )
+

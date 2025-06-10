@@ -56,8 +56,9 @@ class SingleDeviceInference:
         
         # 性能统计
         self.stats = {
-            'time_to_first_token': 0.0,
+            'total_time_to_first_token': 0.0,
             'token_decode_time': 0.0,
+            'total_generation_time': 0.0,
             'layer_processing_time': {},  # 每层的处理时间
             'memory_usage': {},           # 每层的内存使用
             'total_tokens_generated': 0,
@@ -344,7 +345,7 @@ class SingleDeviceInference:
         
         # 记录生成开始时间
         is_first_token = True
-        generation_start_time = time.time()
+        decode_start_time = time.time()
         
         for step in range(input_ids.shape[1], max_length):
             # 准备当前步的输入
@@ -407,8 +408,20 @@ class SingleDeviceInference:
                 past_key_values = outputs['past_key_values']
             
             if is_first_token:
-                self.stats['time_to_first_token'] = time.time() - generation_start_time
+                # 使用prompt开始时间计算TTFT，如果没有设置则使用decode开始时间（向后兼容）
+                if hasattr(self, '_current_prompt_start_time') and hasattr(self, '_is_new_prompt') and self._is_new_prompt:
+                    first_token_time = time.time() - self._current_prompt_start_time
+                    self._is_new_prompt = False  # 重置标记
+                else:
+                    first_token_time = time.time() - decode_start_time
+                
+                self.stats['total_time_to_first_token'] += first_token_time
                 is_first_token = False
+                
+                # 立即解码并打印第一个token，用于验证TTFT计算
+                if tokenizer is not None:
+                    first_token_text = tokenizer.decode(next_tokens[0], skip_special_tokens=True)
+                    print(f"    [分层模型] 第一个token '{first_token_text}' 生成完成，TTFT: {first_token_time*1000:.3f}ms")
 
             # 检查是否有序列完成
             if config.eos_token_id is not None:
@@ -419,9 +432,9 @@ class SingleDeviceInference:
                 break
         
         # 更新统计信息
-        generation_time = time.time() - generation_start_time
+        decode_time = time.time() - decode_start_time   
         tokens_generated = generated_tokens.shape[1] - input_ids.shape[1]
-        self.stats['token_decode_time'] += generation_time
+        self.stats['token_decode_time'] += decode_time
         self.stats['total_tokens_generated'] += tokens_generated * batch_size
         
         return generated_tokens
@@ -447,9 +460,18 @@ class SingleDeviceInference:
         Returns:
             str: 生成的文本
         """
+        # 开始计时 - 从tokenization开始，与完整模型保持一致
+        prompt_start_time = time.time()
+        
         # 编码输入
         input_ids = tokenizer.encode(prompt, return_tensors="pt", add_special_tokens=True)
         input_length = input_ids.shape[1]
+
+        generation_start_time = time.time()
+        
+        # 标记这是一个新的prompt，用于TTFT计算
+        self._current_prompt_start_time = prompt_start_time
+        self._is_new_prompt = True
         
         # 生成
         with torch.no_grad():
@@ -462,6 +484,9 @@ class SingleDeviceInference:
             new_tokens = generated_ids[0][input_length:]
             generated_text = tokenizer.decode(new_tokens, skip_special_tokens=True)
         
+        generation_time = time.time() - generation_start_time
+        self.stats['total_generation_time'] += generation_time
+
         return generated_text
     
     def get_stats(self) -> Dict[str, Any]:
@@ -475,7 +500,7 @@ class SingleDeviceInference:
         return {
             **self.stats,
             'avg_token_decode_time': avg_token_decode_time,
-            'tokens_per_second': 1.0 / avg_token_decode_time if avg_token_decode_time > 0 else 0,
+            'tokens_per_second': self.stats['total_tokens_generated'] / self.stats['total_generation_time'] if self.stats['total_generation_time'] > 0 else 0,
             'device': self.device,
             'num_submodels': len(self.submodels)
         }
@@ -511,6 +536,7 @@ class SingleDeviceInference:
         self.stats = {
             'time_to_first_token': 0.0,
             'token_decode_time': 0.0,
+            'total_generation_time': 0.0,
             'layer_processing_time': {},
             'memory_usage': {},
             'total_tokens_generated': 0,
