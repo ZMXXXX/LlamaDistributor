@@ -421,7 +421,7 @@ class SingleDeviceInference:
                 # 立即解码并打印第一个token，用于验证TTFT计算
                 if tokenizer is not None:
                     first_token_text = tokenizer.decode(next_tokens[0], skip_special_tokens=True)
-                    print(f"    [分层模型] 第一个token '{first_token_text}' 生成完成，TTFT: {first_token_time*1000:.3f}ms")
+                    print(f"\n--- [分层模型] 第一个token '{first_token_text}' 生成完成，TTFT: {first_token_time*1000:.3f}ms")
 
             # 检查是否有序列完成
             if config.eos_token_id is not None:

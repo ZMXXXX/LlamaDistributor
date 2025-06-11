@@ -85,6 +85,7 @@ class LlamaSubModel(nn.Module):
         ])
         
         # 如果是最后一个分层，需要归一化层和语言模型头
+        ## TODO：后续需要在退出层直接添加一个lm_head，而不是在最后一个分层添加，从而直接输出中间态结果
         if self.is_last_partition:
             self.norm = LlamaRMSNorm(
                 self.config.hidden_size, 
@@ -313,7 +314,7 @@ class LlamaPartitioner:
         self.original_model = None
         self.analyzer = LlamaModelAnalyzer(model_path, config)
     
-    def load_original_model(self, device: str = "cpu") -> LlamaForCausalLMSeq:
+    def load_original_model(self, device: str = "cuda:0") -> LlamaForCausalLMSeq:
         """
         加载原始模型
         

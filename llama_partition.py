@@ -199,7 +199,7 @@ def benchmark_baseline_inference(
                     
                     # 立即解码并打印第一个token，用于验证TTFT计算
                     first_token_text = tokenizer.decode(next_token[0], skip_special_tokens=True)
-                    print(f"    [完整模型] 第一个token '{first_token_text}' 生成完成，TTFT: {first_token_latency*1000:.3f}ms")
+                    print(f"\n--- [完整模型] 第一个token '{first_token_text}' 生成完成，TTFT: {first_token_latency*1000:.3f}ms")
 
                 total_tokens_generated += 1
 
@@ -810,7 +810,7 @@ def _create_percentage_change_chart(baseline_result: dict, partition_results: di
 
 
 def main(
-    model_path: str = "/home/zmx/models/Llama/Llama-2-7b-hf",
+    model_path: str = "/home/zmx/models/Llama/layerskip-llama2-7B",
     device: str = "cuda:0",
     temperature: float = DEFAULT_TEMPERATURE,
     top_p: float = DEFAULT_TOP_P,
@@ -850,9 +850,17 @@ def main(
             )
         },
         {
-            "name": "4分层-均匀",
+            "name": "16分层-均匀",
             "strategy": PartitionStrategy(
-                num_partitions=4,
+                num_partitions=16,
+                strategy_type=StrategyType.SINGLE_DEVICE,
+                single_device=device
+            )
+        },
+        {
+            "name": "32分层-均匀",
+            "strategy": PartitionStrategy(
+                num_partitions=32,
                 strategy_type=StrategyType.SINGLE_DEVICE,
                 single_device=device
             )
