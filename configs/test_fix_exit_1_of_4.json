@@ -1,0 +1,12 @@
+{
+  "strategies": [
+    {
+      "name": "测试-4分层-早退位置1",
+      "num_partitions": 4,
+      "strategy_type": "SINGLE_DEVICE",
+      "custom_boundaries": null,
+      "exit_position": 1,
+      "description": "测试配置：4分层，执行前1个submodel（0-0号）"
+    }
+  ]
+}

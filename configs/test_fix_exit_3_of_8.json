@@ -1,0 +1,12 @@
+{
+  "strategies": [
+    {
+      "name": "测试-8分层-早退位置3",
+      "num_partitions": 8,
+      "strategy_type": "SINGLE_DEVICE",
+      "custom_boundaries": null,
+      "exit_position": 3,
+      "description": "测试配置：8分层，执行前3个submodel（0-2号）"
+    }
+  ]
+}

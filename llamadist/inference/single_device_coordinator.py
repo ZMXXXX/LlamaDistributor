@@ -9,6 +9,7 @@ import torch
 import torch.nn.functional as F
 from typing import List, Dict, Optional, Tuple, Any, Union
 import time
+import copy
 from dataclasses import dataclass
 
 # 使用内置的分层器模块
@@ -54,6 +55,10 @@ class SingleDeviceInference:
         # 确保所有子模型在同一设备上
         self._ensure_same_device()
         
+        # Early-exit submodel缓存
+        self._early_exit_cache = {}  # 格式: {submodel_idx: prepared_submodel}
+        self._original_lm_head_weights = None  # 保存原始lm_head权重用于复制
+        
         # 性能统计
         self.stats = {
             'total_time_to_first_token': 0.0,
@@ -69,6 +74,15 @@ class SingleDeviceInference:
         for sm in self.submodels:
             info = sm.get_info()
             print(f"  分层 {info['partition_idx']}: 层{info['layer_start']}-{info['layer_end']}")
+    
+    def set_original_lm_head_weights(self, lm_head_weights: torch.Tensor):
+        """
+        设置原始模型的lm_head权重，用于early-exit submodel
+        
+        Args:
+            lm_head_weights: 原始模型的lm_head权重
+        """
+        self._original_lm_head_weights = lm_head_weights.clone().to(self.device)
     
     def _validate_submodels(self):
         """验证子模型的有效性"""
@@ -103,16 +117,18 @@ class SingleDeviceInference:
         input_ids: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         past_key_values: Optional[List[torch.FloatTensor]] = None,
-        use_cache: bool = True
+        use_cache: bool = True,
+        exit_position: Optional[int] = None
     ) -> Dict[str, Any]:
         """
-        执行单设备分层前向传播
+        执行单设备分层submodels整体前向传播流程
         
         Args:
             input_ids: 输入token ID
             attention_mask: 注意力掩码
             past_key_values: 过去的键值对
             use_cache: 是否使用缓存
+            exit_position: Early-exit位置（指定在哪个submodel结束时退出）
         
         Returns:
             Dict: 包含logits、hidden_states和past_key_values的字典
@@ -133,9 +149,22 @@ class SingleDeviceInference:
         
         # 记录每层的处理时间和内存使用
         layer_stats = {}
+        early_exit_submodel = None  # 保存early-exit时的最后一个submodel
         
         # 通过每个子模型进行推理
         for i, submodel in enumerate(self.submodels):
+            # 检查是否应该停止（early-exit）
+            # exit_position = n 表示执行前n个submodel（索引0到n-1）
+            if exit_position is not None and i >= exit_position:
+                break
+            
+            # 检查这是否是early-exit的最后一个submodel
+            is_early_exit_last = (exit_position is not None and i == exit_position - 1)
+            
+            # 如果是early-exit的最后一个submodel且当前不是最后一个分层，则获取缓存的early-exit submodel
+            if is_early_exit_last and not submodel.is_last_partition:
+                submodel = self._get_early_exit_submodel(i)
+                early_exit_submodel = submodel  # 保存准备好的submodel
             layer_start_time = time.time()
             
             # 记录处理前的内存使用
@@ -227,6 +256,13 @@ class SingleDeviceInference:
                 'memory_delta': memory_delta,
                 'memory_after': memory_after if torch.cuda.is_available() and self.device.startswith('cuda') else 0
             }
+            
+            # 如果这是early-exit的最后一个submodel，记录日志
+            if is_early_exit_last:
+                # 只在统计信息中记录early-exit，避免重复打印
+                if not hasattr(self, '_early_exit_logged'):
+                    print(f"Early-exit activated: executed {exit_position} submodels (0-{exit_position-1}), last submodel layers {submodel.layer_start}-{submodel.layer_end}")
+                    self._early_exit_logged = True
         
         # 更新统计信息
    
@@ -239,12 +275,104 @@ class SingleDeviceInference:
             'past_key_values': current_past_key_values if use_cache else None
         }
         
-        # 如果是最后一个分层，应该有logits
-        if hasattr(self.submodels[-1], 'lm_head'):
-            logits = self.submodels[-1].lm_head(current_hidden_states)
-            result['logits'] = logits
+        # 处理logits输出
+        # 如果进行了early-exit，需要确保有logits输出
+        # 对于early-exit的子模型，我们在_prepare_early_exit_submodel中已经添加了lm_head和norm
+        if exit_position is not None:
+            # Early-exit情况：使用保存的early_exit_submodel（如果有的话）
+            if early_exit_submodel is not None:
+                # 使用准备好的early-exit submodel
+                last_submodel = early_exit_submodel
+            else:
+                # 如果没有准备early-exit submodel，使用原始的最后一个submodel
+                last_processed_idx = exit_position - 1
+                last_submodel = self.submodels[last_processed_idx]
+            
+            if hasattr(last_submodel, 'lm_head') and last_submodel.lm_head is not None:
+                # 应用归一化（如果存在）
+                normalized_hidden_states = current_hidden_states
+                if hasattr(last_submodel, 'norm') and last_submodel.norm is not None:
+                    normalized_hidden_states = last_submodel.norm(current_hidden_states)
+                
+                logits = last_submodel.lm_head(normalized_hidden_states)
+                result['logits'] = logits
+            else:
+                # 如果最后一个submodel没有lm_head，需要创建临时的
+                print(f"Warning: Early-exit submodel {exit_position-1} has no lm_head, creating temporary one...")
+                temp_submodel = self._prepare_early_exit_submodel(self.submodels[exit_position - 1])
+                normalized_hidden_states = current_hidden_states
+                if hasattr(temp_submodel, 'norm') and temp_submodel.norm is not None:
+                    normalized_hidden_states = temp_submodel.norm(current_hidden_states)
+                
+                logits = temp_submodel.lm_head(normalized_hidden_states)
+                result['logits'] = logits
+        else:
+            # 正常情况：如果是最后一个分层，应该有logits
+            if hasattr(self.submodels[-1], 'lm_head'):
+                logits = self.submodels[-1].lm_head(current_hidden_states)
+                result['logits'] = logits
         
         return result
+    
+    def _get_early_exit_submodel(self, submodel_idx: int) -> LlamaSubModel:
+        """
+        获取early-exit子模型（使用缓存优化）
+        
+        Args:
+            submodel_idx: 子模型索引
+        
+        Returns:
+            LlamaSubModel: 带有归一化层和语言模型头的子模型
+        """
+        # 检查缓存中是否已有准备好的early-exit submodel
+        if submodel_idx in self._early_exit_cache:
+            return self._early_exit_cache[submodel_idx]
+        
+        # 缓存中没有，创建新的early-exit submodel
+        original_submodel = self.submodels[submodel_idx]
+        early_exit_submodel = self._prepare_early_exit_submodel(original_submodel)
+        
+        # 缓存结果
+        self._early_exit_cache[submodel_idx] = early_exit_submodel
+        
+        return early_exit_submodel
+    
+    def _prepare_early_exit_submodel(self, original_submodel: LlamaSubModel) -> LlamaSubModel:
+        """
+        为early-exit子模型，添加归一化层和语言模型头
+        
+        Args:
+            original_submodel: 原始子模型
+        
+        Returns:
+            LlamaSubModel: 带有归一化层和语言模型头的子模型副本
+        """
+        early_exit_submodel = copy.deepcopy(original_submodel)
+        
+        # 添加归一化层和语言模型头（如果还没有）
+        if not hasattr(early_exit_submodel, 'norm') or early_exit_submodel.norm is None:
+            from ..models.llama_seq import LlamaRMSNorm
+            early_exit_submodel.norm = LlamaRMSNorm(
+                early_exit_submodel.config.hidden_size,
+                eps=early_exit_submodel.config.rms_norm_eps
+            ).to(self.device)
+        
+        if not hasattr(early_exit_submodel, 'lm_head') or early_exit_submodel.lm_head is None:
+            import torch.nn as nn
+            early_exit_submodel.lm_head = nn.Linear(
+                early_exit_submodel.config.hidden_size,
+                early_exit_submodel.config.vocab_size,
+                bias=False
+            ).to(self.device)
+            
+            # 如果有原始模型可用，尝试复制权重
+            if self._original_lm_head_weights is not None:
+                early_exit_submodel.lm_head.weight.data.copy_(self._original_lm_head_weights)
+        
+        # 标记为最后分层，这样forward方法会输出logits
+        early_exit_submodel.is_last_partition = True
+        
+        return early_exit_submodel
     
     def _transfer_kv_cache_to_device(self, past_key_values: List[torch.FloatTensor]) -> List[torch.FloatTensor]:
         """将KV缓存传输到目标设备"""
@@ -361,7 +489,8 @@ class SingleDeviceInference:
                 outputs = self.forward_pass(
                     input_ids=current_input_ids,
                     past_key_values=past_key_values,
-                    use_cache=config.use_cache
+                    use_cache=config.use_cache,
+                    exit_position=config.exit_position
                 )
             
             # 获取下一个token的logits
@@ -541,6 +670,37 @@ class SingleDeviceInference:
             'memory_usage': {},
             'total_tokens_generated': 0,
             'inference_count': 0
+        }
+        # 重置early-exit日志标志
+        if hasattr(self, '_early_exit_logged'):
+            delattr(self, '_early_exit_logged')
+    
+    def clear_early_exit_cache(self):
+        """清理early-exit submodel缓存，释放内存"""
+        cached_count = len(self._early_exit_cache)
+        
+        # 删除缓存的submodel以释放内存
+        for submodel_idx, cached_submodel in self._early_exit_cache.items():
+            # 将缓存的submodel移动到CPU并删除以释放GPU内存
+            if hasattr(cached_submodel, 'cpu'):
+                cached_submodel.cpu()
+            del cached_submodel
+        
+        self._early_exit_cache.clear()
+        
+        # 如果有CUDA，清理GPU内存
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        if cached_count > 0:
+            print(f"Early-exit submodel缓存已清理（{cached_count}个缓存项）")
+    
+    def get_cache_info(self) -> Dict[str, Any]:
+        """获取缓存信息"""
+        return {
+            'cached_submodels': list(self._early_exit_cache.keys()),
+            'cache_size': len(self._early_exit_cache),
+            'has_original_lm_head': self._original_lm_head_weights is not None
         }
     
     def print_layer_analysis(self):

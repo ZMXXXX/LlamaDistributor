@@ -8,8 +8,10 @@ import sys
 import time
 import argparse
 import os
+import json
 from datetime import datetime
 from pathlib import Path
+from typing import Optional, List, Dict, Any
 from transformers import LlamaTokenizer, LlamaForCausalLM
 import torch.nn.functional as F
 import matplotlib
@@ -42,6 +44,88 @@ DEFAULT_TEMPERATURE = 0.8
 DEFAULT_TOP_P = 0.9
 DEFAULT_DO_SAMPLE = True
 DEFAULT_MAX_NEW_TOKENS = 100
+
+
+def load_strategies_from_config(config_file: str = "configs/strategies_config.json", device: str = "cuda:0") -> List[Dict[str, Any]]:
+    """
+    从JSON配置文件加载策略列表
+    
+    Args:
+        config_file: 配置文件路径，默认为strategies_config.json
+        device: 设备名称，用于设置strategy中的single_device参数
+        
+    Returns:
+        List[Dict]: 包含策略对象的字典列表
+    """
+    # 获取配置文件的完整路径
+    config_path = Path(__file__).parent / config_file
+    
+    if not config_path.exists():
+        raise FileNotFoundError(f"策略配置文件不存在: {config_path}")
+    
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config_data = json.load(f)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"配置文件JSON格式错误: {e}")
+    except Exception as e:
+        raise RuntimeError(f"读取配置文件失败: {e}")
+    
+    if "strategies" not in config_data:
+        raise ValueError("配置文件中缺少'strategies'字段")
+    
+    strategies_to_test = []
+    
+    for strategy_config in config_data["strategies"]:
+        try:
+            # 验证必需字段
+            required_fields = ["name", "num_partitions", "strategy_type"]
+            for field in required_fields:
+                if field not in strategy_config:
+                    raise ValueError(f"策略配置缺少必需字段: {field}")
+            
+            # 转换strategy_type字符串为枚举
+            strategy_type_str = strategy_config["strategy_type"]
+            if strategy_type_str == "SINGLE_DEVICE":
+                strategy_type = StrategyType.SINGLE_DEVICE
+            else:
+                # 可以在这里添加其他策略类型的支持
+                raise ValueError(f"不支持的策略类型: {strategy_type_str}")
+            
+            # 处理custom_boundaries
+            custom_boundaries = strategy_config.get("custom_boundaries")
+            if custom_boundaries is not None:
+                # 将list转换为tuple以符合PartitionStrategy的要求
+                custom_boundaries = [tuple(boundary) for boundary in custom_boundaries]
+            
+            # 创建PartitionStrategy对象
+            strategy = PartitionStrategy(
+                num_partitions=strategy_config["num_partitions"],
+                strategy_type=strategy_type,
+                single_device=device,
+                custom_boundaries=custom_boundaries
+            )
+            
+            strategies_to_test.append({
+                "name": strategy_config["name"],
+                "strategy": strategy,
+                "description": strategy_config.get("description", ""),
+                "exit_position": strategy_config.get("exit_position")
+            })
+            
+        except Exception as e:
+            print(f"警告: 跳过无效的策略配置 '{strategy_config.get('name', 'unknown')}': {e}")
+            continue
+    
+    if not strategies_to_test:
+        raise ValueError("没有有效的策略配置")
+    
+    print(f"成功加载 {len(strategies_to_test)} 个策略配置:")
+    for strategy_dict in strategies_to_test:
+        description = f" - {strategy_dict['description']}" if strategy_dict['description'] else ""
+        print(f"  - {strategy_dict['name']}{description}")
+    
+    return strategies_to_test
 
 
 
@@ -138,7 +222,7 @@ def benchmark_baseline_inference(
     if device.startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA不可用，但指定了CUDA设备")
     
-    start_time = time.time()
+    load_start_time = time.time()
 
     try:
         # 加载原始模型 
@@ -151,7 +235,7 @@ def benchmark_baseline_inference(
     except Exception as e:
         raise RuntimeError(f"模型加载失败: {e}")
 
-    load_time = time.time() - start_time
+    load_time = time.time() - load_start_time
     print(f"原始模型加载完成，耗时: {load_time:.2f}秒")
 
     # 初始化性能指标
@@ -273,7 +357,7 @@ def benchmark_partition_inference(
     print("按层分割推理")
     print(f"设备: {device}")
     print(f"生成参数: temperature={temperature}, top_p={top_p}, do_sample={do_sample}, max_new_tokens={max_new_tokens}")
-
+    
     print("="*60)
     
     # 检查设备可用性
@@ -293,7 +377,9 @@ def benchmark_partition_inference(
     all_results = {}
 
     for strategy in strategies_to_test:
-        print(f"按测试策略: {strategy['name']}开始分层...")
+        strategy_exit_position = strategy.get('exit_position')
+        exit_info = f" (Early-exit: 第{strategy_exit_position}个submodel后)" if strategy_exit_position is not None else " (正常推理到最后一层)"
+        print(f"按测试策略: {strategy['name']}{exit_info}开始分层...")
         print("-" * 30)
 
         partition_start_time = time.time()
@@ -325,7 +411,8 @@ def benchmark_partition_inference(
                 top_p = top_p,
                 do_sample = do_sample,
                 eos_token_id = tokenizer.eos_token_id,
-                pad_token_id = tokenizer.pad_token_id
+                pad_token_id = tokenizer.pad_token_id,
+                exit_position = strategy_exit_position
             ),
             device = device
         )
@@ -379,20 +466,26 @@ def benchmark_partition_inference(
     return all_results
 
 
-def create_comparison_table(baseline_result: dict, partition_results: dict):
+def create_comparison_table(baseline_result: dict, partition_results: dict, benchmark: bool = False):
     """
     创建完整推理和分割推理的对比表格，并保存到benchmark子文件夹
     
     Args:
         baseline_result: 完整推理的结果字典
         partition_results: 分割推理的结果字典，包含多个策略的结果
+        benchmark: 是否生成benchmark图表和详细分析
     """
-    # 创建benchmark文件夹
-    benchmark_dir = Path("benchmark")
-    benchmark_dir.mkdir(exist_ok=True)
-    
-    # 生成时间戳用于文件名
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # 根据benchmark参数决定是否创建文件夹和时间戳
+    if benchmark:
+        # 创建benchmark文件夹
+        benchmark_dir = Path("benchmark")
+        benchmark_dir.mkdir(exist_ok=True)
+        
+        # 生成时间戳用于文件名
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    else:
+        benchmark_dir = None
+        timestamp = None
     
     try:
         # 导入tabulate用于创建表格
@@ -469,29 +562,31 @@ def create_comparison_table(baseline_result: dict, partition_results: dict):
     else:
         _print_simple_table(table_data, headers)
     
-    # 保存表格到文件
-    table_file = benchmark_dir / f"performance_comparison_{timestamp}.txt"
-    with open(table_file, 'w', encoding='utf-8') as f:
-        f.write("性能对比表格\n")
-        f.write("="*80 + "\n")
-        f.write(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+    # 只有在benchmark模式下才保存文件
+    if benchmark:
+        # 保存表格到文件
+        table_file = benchmark_dir / f"performance_comparison_{timestamp}.txt"
+        with open(table_file, 'w', encoding='utf-8') as f:
+            f.write("性能对比表格\n")
+            f.write("="*80 + "\n")
+            f.write(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+            
+            if use_tabulate:
+                f.write(table_str)
+            else:
+                # 写入简单格式表格
+                header_line = " | ".join(f"{h:<20}" for h in headers)
+                f.write(header_line + "\n")
+                f.write("-" * len(header_line) + "\n")
+                for row in table_data:
+                    row_line = " | ".join(f"{str(cell):<20}" for cell in row)
+                    f.write(row_line + "\n")
         
-        if use_tabulate:
-            f.write(table_str)
-        else:
-            # 写入简单格式表格
-            header_line = " | ".join(f"{h:<20}" for h in headers)
-            f.write(header_line + "\n")
-            f.write("-" * len(header_line) + "\n")
-            for row in table_data:
-                row_line = " | ".join(f"{str(cell):<20}" for cell in row)
-                f.write(row_line + "\n")
-    
-    # 保存CSV格式
-    csv_file = benchmark_dir / f"performance_comparison_{timestamp}.csv"
-    with open(csv_file, 'w', encoding='utf-8') as f:
-        for row in csv_data:
-            f.write(",".join(str(cell) for cell in row) + "\n")
+        # 保存CSV格式
+        csv_file = benchmark_dir / f"performance_comparison_{timestamp}.csv"
+        with open(csv_file, 'w', encoding='utf-8') as f:
+            for row in csv_data:
+                f.write(",".join(str(cell) for cell in row) + "\n")
     
     # 计算并显示性能提升/下降
     print("\n" + "="*80)
@@ -539,32 +634,36 @@ def create_comparison_table(baseline_result: dict, partition_results: dict):
         _print_simple_table(comparison_data, comparison_headers)
     print("\n说明: ↑ 表示性能提升, ↓ 表示性能下降")
     
-    # 保存性能分析表格
-    analysis_file = benchmark_dir / f"performance_analysis_{timestamp}.txt"
-    with open(analysis_file, 'w', encoding='utf-8') as f:
-        f.write("性能对比分析 (相对于完整推理)\n")
-        f.write("="*80 + "\n")
-        f.write(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+    # 只有在benchmark模式下才保存性能分析和生成图表
+    if benchmark:
+        # 保存性能分析表格
+        analysis_file = benchmark_dir / f"performance_analysis_{timestamp}.txt"
+        with open(analysis_file, 'w', encoding='utf-8') as f:
+            f.write("性能对比分析 (相对于完整推理)\n")
+            f.write("="*80 + "\n")
+            f.write(f"生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+            
+            if use_tabulate:
+                f.write(comparison_table)
+            else:
+                header_line = " | ".join(f"{h:<20}" for h in comparison_headers)
+                f.write(header_line + "\n")
+                f.write("-" * len(header_line) + "\n")
+                for row in comparison_data:
+                    row_line = " | ".join(f"{str(cell):<20}" for cell in row)
+                    f.write(row_line + "\n")
+            f.write("\n\n说明: ↑ 表示性能提升, ↓ 表示性能下降")
         
-        if use_tabulate:
-            f.write(comparison_table)
-        else:
-            header_line = " | ".join(f"{h:<20}" for h in comparison_headers)
-            f.write(header_line + "\n")
-            f.write("-" * len(header_line) + "\n")
-            for row in comparison_data:
-                row_line = " | ".join(f"{str(cell):<20}" for cell in row)
-                f.write(row_line + "\n")
-        f.write("\n\n说明: ↑ 表示性能提升, ↓ 表示性能下降")
-    
-    # 生成性能对比图表
-    _create_performance_charts(baseline_result, partition_results, benchmark_dir, timestamp)
-    
-    print(f"\n📁 结果已保存到benchmark文件夹:")
-    print(f"   - 性能表格: {table_file}")
-    print(f"   - CSV数据: {csv_file}")
-    print(f"   - 性能分析: {analysis_file}")
-    print(f"   - 性能图表: benchmark/performance_charts_{timestamp}.png")
+        # 生成性能对比图表
+        _create_performance_charts(baseline_result, partition_results, benchmark_dir, timestamp)
+        
+        print(f"\n📁 结果已保存到benchmark文件夹:")
+        print(f"   - 性能表格: {table_file}")
+        print(f"   - CSV数据: {csv_file}")
+        print(f"   - 性能分析: {analysis_file}")
+        print(f"   - 性能图表: benchmark/performance_charts_{timestamp}.png")
+    else:
+        print(f"\n✅ 性能对比完成 (如需保存图表和详细分析，请使用 --benchmark 参数)")
 
 
 def _print_simple_table(table_data, headers):
@@ -661,8 +760,8 @@ def _create_performance_charts(baseline_result: dict, partition_results: dict,
     main_title = 'LLM推理性能对比' if use_chinese else 'LLM Inference Performance Comparison'
     fig.suptitle(main_title, fontsize=16, fontweight='bold')
     
-    # 颜色设置
-    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
+    # 颜色设置 - 莫兰迪配色
+    colors = ['#8FA1B3', '#A8C09A', '#D4B5A0', '#C7C7C7', '#B8A8CC', '#B3A398']
     
     # 1. 平均吞吐量对比
     bars1 = ax1.bar(strategies, throughput_data, color=colors[:len(strategies)])
@@ -771,7 +870,7 @@ def _create_percentage_change_chart(baseline_result: dict, partition_results: di
     
     x = np.arange(len(metrics))
     width = 0.25
-    colors = ['#ff7f0e', '#2ca02c', '#d62728']
+    colors = ['#A8C09A', '#D4B5A0', '#B8A8CC', '#8FA1B3', '#C7C7C7', '#B3A398', '#9DB2A3', '#CDB8A7']  # 莫兰迪配色
     
     for i, (strategy_name, strategy_changes) in enumerate(changes.items()):
         offset = (i - 1) * width
@@ -815,7 +914,9 @@ def main(
     temperature: float = DEFAULT_TEMPERATURE,
     top_p: float = DEFAULT_TOP_P,
     do_sample: bool = DEFAULT_DO_SAMPLE,
-    max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS
+    max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
+    benchmark: bool = False,
+    config_file: str = "configs/strategies_config.json"
 ):
     tokenizer = LlamaTokenizer.from_pretrained(model_path)
     
@@ -830,42 +931,13 @@ def main(
         max_new_tokens=max_new_tokens
     )
     
-    # 分层策略列表
-    strategies_to_test = [
-        {
-            "name": "3分层-均匀",
-            "strategy": PartitionStrategy(
-                num_partitions=3,
-                strategy_type=StrategyType.SINGLE_DEVICE,
-                single_device=device
-            )
-        },
-        {
-            "name": "3分层-自定义",
-            "strategy": PartitionStrategy(
-                num_partitions=3,
-                strategy_type=StrategyType.SINGLE_DEVICE,
-                single_device=device,
-                custom_boundaries=[(0, 7), (8, 20), (21, 31)]
-            )
-        },
-        {
-            "name": "16分层-均匀",
-            "strategy": PartitionStrategy(
-                num_partitions=16,
-                strategy_type=StrategyType.SINGLE_DEVICE,
-                single_device=device
-            )
-        },
-        {
-            "name": "32分层-均匀",
-            "strategy": PartitionStrategy(
-                num_partitions=32,
-                strategy_type=StrategyType.SINGLE_DEVICE,
-                single_device=device
-            )
-        }
-    ]
+    # 从JSON配置文件加载分层策略列表
+    try:
+        strategies_to_test = load_strategies_from_config(config_file=config_file, device=device)
+    except Exception as e:
+        print(f"错误: 加载策略配置失败: {e}")
+        print("请检查配置文件是否存在且格式正确")
+        return
 
     # 运行分层推理基准测试
     partition_results = benchmark_partition_inference(
@@ -880,13 +952,13 @@ def main(
     )
     
     # 创建对比表格
-    create_comparison_table(baseline_result, partition_results)
+    create_comparison_table(baseline_result, partition_results, benchmark=benchmark)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Llama模型分层分割推理性能测试")
     parser.add_argument("--model_path", type=str, 
-                       default="/home/zmx/models/Llama/Llama-2-7b-hf",
+                       default="/home/zmx/models/Llama/layerskip-llama2-7B",
                        help="模型路径")
     parser.add_argument("--device", type=str, default="cuda:0",
                        help="设备名称")
@@ -900,6 +972,10 @@ if __name__ == "__main__":
                        help="禁用采样，使用贪婪搜索")
     parser.add_argument("--max_new_tokens", type=int, default=DEFAULT_MAX_NEW_TOKENS,
                        help=f"最大生成token数 (默认: {DEFAULT_MAX_NEW_TOKENS})")
+    parser.add_argument("--benchmark", action="store_true", default=False,
+                       help="是否生成benchmark图表和详细分析（默认: False）")
+    parser.add_argument("--config_file", type=str, default="configs/strategies_config.json",
+                       help="策略配置文件路径（默认: configs/strategies_config.json）")
     
     args = parser.parse_args()
     
@@ -910,6 +986,8 @@ if __name__ == "__main__":
         temperature=args.temperature,
         top_p=args.top_p,
         do_sample=args.do_sample,
-        max_new_tokens=args.max_new_tokens
+        max_new_tokens=args.max_new_tokens,
+        benchmark=args.benchmark,
+        config_file=args.config_file
     )
 

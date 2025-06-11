@@ -1,0 +1,32 @@
+{
+  "strategies": [
+    {
+      "name": "3分层-均匀",
+      "num_partitions": 3,
+      "strategy_type": "SINGLE_DEVICE",
+      "custom_boundaries": null,
+      "description": "将模型均匀分为3个分层"
+    },
+    {
+      "name": "3分层-自定义",
+      "num_partitions": 3,
+      "strategy_type": "SINGLE_DEVICE",
+      "custom_boundaries": [[0, 7], [8, 20], [21, 31]],
+      "description": "自定义3个分层的边界"
+    },
+    {
+      "name": "16分层-均匀",
+      "num_partitions": 16,
+      "strategy_type": "SINGLE_DEVICE",
+      "custom_boundaries": null,
+      "description": "将模型均匀分为16个分层"
+    },
+    {
+      "name": "32分层-均匀",
+      "num_partitions": 32,
+      "strategy_type": "SINGLE_DEVICE",
+      "custom_boundaries": null,
+      "description": "将模型均匀分为32个分层"
+    }
+  ]
+} 

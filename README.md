@@ -19,12 +19,12 @@ LlamaDistributor是一个专门针对Llama模型设计的高性能分布式推�
 ### 核心组件
 
 **llamadist/models/**
-- 集成QLLM核心算法的Llama模型实现
+- 集成QLLM的Llama模型分层推理实现
 - 支持分片执行的模型结构
 - 与Transformers库兼容的接口设计
 
 **llamadist/partitioner/**
-- `strategies.py`: 实现五种智能分层策略
+- `strategies.py`: 实现多种分层策略
 - `analyzer.py`: 模型结构分析和资源评估
 - `splitter.py`: 模型分层和子模型管理
 
@@ -54,18 +54,12 @@ LlamaDistributor是一个专门针对Llama模型设计的高性能分布式推�
 
 **KV-Cache优化**
 - 完全兼容KV缓存机制
-- 时间复杂度从O(n²)优化到O(1)
+- 模型层间KV-Cache连贯传递
 - 长序列生成稳定性保证
 
 **文本生成**
 - 连贯文本生成能力
-- 支持温度调节和top-k采样
-- 自动停止条件判断
-
-**交互式应用**
-- 实时问答系统
-- 交互式对话界面
-- 批量文本处理能力
+- 支持temperature调节和top-k采样
 
 ### 应用示例
 
@@ -159,12 +153,9 @@ LlamaDistributor/
 │   └── utils/                # 工具模块
 │       └── config.py         # 配置管理
 ├── examples/                 # 示例代码
-├── configs/                  # 配置文件
+├── configs/                  # 分层策略、prompt配置文件
 ├── tests/                    # 测试代码
-├── demo.py                   # 基本演示
-├── simple_demo.py           # 文本生成演示
-├── interactive_demo.py      # 交互式问答演示
-└── setup.py                 # 安装脚本
+└── llama_partition.py       # 分层推理执行入口
 ```
 
 ## 🎮 分层策略
