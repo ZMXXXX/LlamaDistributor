@@ -524,7 +524,7 @@ def create_comparison_table(baseline_result: dict, partition_results: dict):
                 if direction == "higher_is_better":
                     status = "↑" if change_percent > 0 else "↓"
                 else:  # lower_is_better
-                    status = "↓" if change_percent < 0 else "↑"
+                    status = "↓" if change_percent > 0 else "↑"
                 
                 row.append(f"{change_percent:+.2f}% {status}")
             else:
