@@ -61,19 +61,7 @@ LlamaDistributor是一个专门针对Llama模型设计的 layer partition infere
 - 连贯文本生成能力
 - 支持temperature调节和top-k采样
 
-### 应用示例
 
-#### 问答系统演示
-
-```
-输入: "What is the capital of France?"
-输出: "What is the capital of France? Paris! Paris is the capital and the largest city..."
-生成时间: 0.74秒
-
-输入: "How does machine learning work?"
-输出: "How does machine learning work? Machine learning is an exciting area of artificial intelligence..."
-生成时间: 0.50秒
-```
 
 ## 🛠️ 环境配置
 
