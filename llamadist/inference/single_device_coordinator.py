@@ -356,6 +356,11 @@ class SingleDeviceInference:
                 early_exit_submodel.config.hidden_size,
                 eps=early_exit_submodel.config.rms_norm_eps
             ).to(self.device)
+            
+            # 🔧 修复：如果有原始norm权重，复制过来
+            if hasattr(self, '_original_norm_weights') and self._original_norm_weights is not None:
+                early_exit_submodel.norm.weight.data.copy_(self._original_norm_weights.to(self.device))
+                print(f"✅ 已为early-exit submodel复制原始norm权重")
         
         if not hasattr(early_exit_submodel, 'lm_head') or early_exit_submodel.lm_head is None:
             import torch.nn as nn
@@ -368,6 +373,7 @@ class SingleDeviceInference:
             # 如果有原始模型可用，尝试复制权重
             if self._original_lm_head_weights is not None:
                 early_exit_submodel.lm_head.weight.data.copy_(self._original_lm_head_weights)
+                print(f"✅ 已为early-exit submodel复制原始lm_head权重")
         
         # 标记为最后分层，这样forward方法会输出logits
         early_exit_submodel.is_last_partition = True

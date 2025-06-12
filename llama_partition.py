@@ -416,6 +416,37 @@ def benchmark_partition_inference(
             ),
             device = device
         )
+        
+        # 🔧 修复：为early-exit设置原始模型的权重
+        if strategy_exit_position is not None:
+            print("检测到early-exit配置，正在获取原始模型权重...")
+            # 临时加载原始模型以获取lm_head和norm权重
+            try:
+                original_model = LlamaForCausalLM.from_pretrained(
+                    model_path,
+                    device_map="cpu",  # 先加载到CPU以节省显存
+                    torch_dtype=torch.float16
+                )
+                
+                # 设置lm_head权重
+                if hasattr(original_model, 'lm_head') and original_model.lm_head is not None:
+                    inference_engine.set_original_lm_head_weights(original_model.lm_head.weight.data)
+                    print("✅ 已设置原始lm_head权重")
+                
+                # 设置norm权重（如果需要early-exit子模型中使用）
+                if hasattr(original_model.model, 'norm') and original_model.model.norm is not None:
+                    # 为推理引擎设置原始norm权重
+                    inference_engine._original_norm_weights = original_model.model.norm.weight.data.clone()
+                    print("✅ 已设置原始norm权重")
+                
+                # 清理原始模型以释放内存
+                del original_model
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                print("✅ 已清理临时加载的原始模型")
+                    
+            except Exception as e:
+                print(f"⚠️  警告：无法加载原始模型权重，early-exit可能效果不佳: {e}")
 
         partition_time = time.time() - partition_start_time
         

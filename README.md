@@ -113,14 +113,8 @@ result = inference_engine.forward_pass(input_ids)
 ### 演示程序
 
 ```bash
-# 基本功能演示
-python demo.py
-
-# 文本生成演示
-python simple_demo.py
-
-# 交互式问答
-python interactive_demo.py
+# 基本功能演示,完整推理与单设备分层推理对比，可自定义参数
+python llama_partition.py
 ```
 
 ## 📁 项目结构
