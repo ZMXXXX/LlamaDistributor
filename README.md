@@ -4,15 +4,15 @@
 
 ## 🌟 概述
 
-LlamaDistributor是一个专门针对Llama模型设计的高性能分布式推理系统。该系统基于QLLM项目的核心分片算法，通过智能模型分层和跨设备协调推理，实现了LLM模型划分和分布式部署，该项目正在持续更新中。
+LlamaDistributor是一个专门针对Llama模型设计的 layer partition inference system。该系统基于QLLM项目的核心分片算法，通过智能模型分层和跨设备协调推理，实现了LLM模型划分和分布式部署，该项目正在持续更新中。
 
 ### 核心特性
 
-- **智能模型分层**: 提供均匀分层、内存感知、计算负载均衡、混合策略和自定义分层五种分层策略
+- **智能模型分层**: 提供均匀分层、自定义分层、内存感知、计算负载均衡和混合策略五种分层策略
 - **分布式推理**: 支持跨多GPU和CPU设备的协调推理，实现大模型的分布式部署
-- **高效缓存机制**: 完全兼容KV-Cache优化技术，显著提升推理性能
+- **高效缓存机制**: 兼容KV-Cache，维护KV-Cache层间传递，优化推理性能
 - **灵活配置**: 支持多种设备配置和分层策略，适应不同硬件环境
-- **性能监控**: 提供详细的推理时间统计和资源使用监控
+- **性能监控**: 集成推理性能benchmark
 
 ## 🏗️ 系统架构
 
@@ -182,11 +182,6 @@ LlamaDistributor/
 - 用户指定分层边界
 - 适用于特定优化需求
 
-**single_device（单设备分层）**
-- 在同一设备上进行分层推理
-- 适用于测试分层效果、内存优化和调试分层逻辑
-- 支持自定义分层点和均匀分层
-
 ### 配置示例
 
 ```python
@@ -232,4 +227,4 @@ strategy = PartitionStrategy(
 
 ---
 
-LlamaDistributor旨在测试LLM model partition & distributed inference，仍在开发中。 
+LlamaDistributor旨在测试LLM layer partition & distributed inference，仍在开发中。 
