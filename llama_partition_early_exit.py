@@ -791,11 +791,32 @@ def _create_performance_charts(baseline_result: dict, partition_results: dict,
     main_title = 'LLM推理性能对比' if use_chinese else 'LLM Inference Performance Comparison'
     fig.suptitle(main_title, fontsize=16, fontweight='bold')
     
-    # 颜色设置 - 莫兰迪配色
-    colors = ['#8FA1B3', '#A8C09A', '#D4B5A0', '#C7C7C7', '#B8A8CC', '#B3A398']
+    # 颜色设置 - 明亮生动但不过分饱和的配色（支持12+种策略）
+    colors = [
+        '#4A90E2',  # 明亮的蓝色
+        '#7ED321',  # 鲜绿色
+        '#F5A623',  # 橙黄色
+        '#BD10E0',  # 紫色
+        '#50E3C2',  # 青绿色
+        '#F8E71C',  # 柠檬黄
+        '#B8E986',  # 浅绿色
+        '#9013FE',  # 蓝紫色
+        '#FF6B6B',  # 珊瑚红
+        '#4ECDC4',  # 薄荷绿
+        '#45B7D1',  # 天蓝色
+        '#96CEB4',  # 薄荷绿
+        '#FFEAA7',  # 奶油黄
+        '#DDA0DD',  # 淡紫色
+        '#98D8C8',  # 浅蓝绿
+        '#F7DC6F',  # 金黄色
+        '#BB8FCE',  # 薰衣草紫
+        '#85C1E9',  # 浅蓝色
+        '#F8C471',  # 桃色
+        '#82E0AA'   # 淡绿色
+    ]
     
     # 1. 平均吞吐量对比
-    bars1 = ax1.bar(strategies, throughput_data, color=colors[:len(strategies)])
+    bars1 = ax1.bar(strategies, throughput_data, color=[colors[i % len(colors)] for i in range(len(strategies))])
     title1 = '平均吞吐量 (tokens/秒)' if use_chinese else 'Average Throughput (tokens/sec)'
     ylabel1 = 'Tokens/秒' if use_chinese else 'Tokens/sec'
     ax1.set_title(title1, fontweight='bold')
@@ -807,7 +828,7 @@ def _create_performance_charts(baseline_result: dict, partition_results: dict,
                 f'{value:.2f}', ha='center', va='bottom')
     
     # 2. 平均每token延迟对比
-    bars2 = ax2.bar(strategies, latency_data, color=colors[:len(strategies)])
+    bars2 = ax2.bar(strategies, latency_data, color=[colors[i % len(colors)] for i in range(len(strategies))])
     title2 = '平均每token延迟 (毫秒)' if use_chinese else 'Average Token Latency (ms)'
     ylabel2 = '毫秒' if use_chinese else 'Milliseconds'
     ax2.set_title(title2, fontweight='bold')
@@ -818,7 +839,7 @@ def _create_performance_charts(baseline_result: dict, partition_results: dict,
                 f'{value:.1f}', ha='center', va='bottom')
     
     # 3. 首token延迟对比
-    bars3 = ax3.bar(strategies, ttft_data, color=colors[:len(strategies)])
+    bars3 = ax3.bar(strategies, ttft_data, color=[colors[i % len(colors)] for i in range(len(strategies))])
     title3 = '平均首token延迟 TTFT (毫秒)' if use_chinese else 'Average TTFT (ms)'
     ylabel3 = '毫秒' if use_chinese else 'Milliseconds'
     ax3.set_title(title3, fontweight='bold')
@@ -829,7 +850,7 @@ def _create_performance_charts(baseline_result: dict, partition_results: dict,
                 f'{value:.1f}', ha='center', va='bottom')
     
     # 4. 总生成时间对比
-    bars4 = ax4.bar(strategies, generation_time_data, color=colors[:len(strategies)])
+    bars4 = ax4.bar(strategies, generation_time_data, color=[colors[i % len(colors)] for i in range(len(strategies))])
     title4 = '总生成时间 (秒)' if use_chinese else 'Total Generation Time (sec)'
     ylabel4 = '秒' if use_chinese else 'Seconds'
     ax4.set_title(title4, fontweight='bold')
@@ -901,7 +922,29 @@ def _create_percentage_change_chart(baseline_result: dict, partition_results: di
     
     x = np.arange(len(metrics))
     width = 0.25
-    colors = ['#A8C09A', '#D4B5A0', '#B8A8CC', '#8FA1B3', '#C7C7C7', '#B3A398', '#9DB2A3', '#CDB8A7']  # 莫兰迪配色
+    # 使用与主图表相同的明亮生动配色
+    colors = [
+        '#4A90E2',  # 明亮的蓝色
+        '#7ED321',  # 鲜绿色
+        '#F5A623',  # 橙黄色
+        '#BD10E0',  # 紫色
+        '#50E3C2',  # 青绿色
+        '#F8E71C',  # 柠檬黄
+        '#B8E986',  # 浅绿色
+        '#9013FE',  # 蓝紫色
+        '#FF6B6B',  # 珊瑚红
+        '#4ECDC4',  # 薄荷绿
+        '#45B7D1',  # 天蓝色
+        '#96CEB4',  # 薄荷绿
+        '#FFEAA7',  # 奶油黄
+        '#DDA0DD',  # 淡紫色
+        '#98D8C8',  # 浅蓝绿
+        '#F7DC6F',  # 金黄色
+        '#BB8FCE',  # 薰衣草紫
+        '#85C1E9',  # 浅蓝色
+        '#F8C471',  # 桃色
+        '#82E0AA'   # 淡绿色
+    ]
     
     for i, (strategy_name, strategy_changes) in enumerate(changes.items()):
         offset = (i - 1) * width

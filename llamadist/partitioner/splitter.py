@@ -461,7 +461,7 @@ class LlamaPartitioner:
                 source_layer = original_layers[source_layer_idx]
                 target_layer.load_state_dict(source_layer.state_dict())
         
-        # 复制归一化层和语言模型头权重（如果是最后一个分层）
+        # 复制归一化层和语言模型头权重（如果是最后一个分层，这里只会对默认最后一个子模型提供norm和lm_head）
         if submodel.is_last_partition:
             if hasattr(original_model.model, 'norm'):
                 submodel.norm.load_state_dict(

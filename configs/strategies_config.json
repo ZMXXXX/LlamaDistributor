@@ -1,7 +1,7 @@
 {
   "strategies": [
     {
-      "name": "32分层-均匀",
+      "name": "32分层-完整推理",
       "num_partitions": 32,
       "strategy_type": "SINGLE_DEVICE",
       "custom_boundaries": null,
@@ -17,12 +17,52 @@
       "description": "将模型均匀分为32个分层，执行前31个submodel（0-30号）"
     },
     {
+      "name": "32分层-早退位置24",
+      "num_partitions": 32,
+      "strategy_type": "SINGLE_DEVICE",
+      "custom_boundaries": null,
+      "exit_position": 24,
+      "description": "将模型均匀分为32个分层，执行前24个submodel（0-23号）"
+    },
+    {
+      "name": "32分层-早退位置16",
+      "num_partitions": 32,
+      "strategy_type": "SINGLE_DEVICE",
+      "custom_boundaries": null,
+      "exit_position": 16,
+      "description": "将模型均匀分为32个分层，执行前16个submodel（0-15号）"
+    },
+    {
       "name": "32分层-早退位置8",
       "num_partitions": 32,
       "strategy_type": "SINGLE_DEVICE",
       "custom_boundaries": null,
-      "exit_position": 8,
+      "exit_position": 8, 
       "description": "将模型均匀分为32个分层，执行前8个submodel（0-7号）"
+    },
+    {
+      "name": "32分层-早退位置1",
+      "num_partitions": 32,
+      "strategy_type": "SINGLE_DEVICE",
+      "custom_boundaries": null,
+      "exit_position": 1,
+      "description": "将模型均匀分为32个分层，执行前1个submodel（0号）"
+    },
+    {
+      "name": "16分层-早退位置12",
+      "num_partitions": 16,
+      "strategy_type": "SINGLE_DEVICE",
+      "custom_boundaries": null,
+      "exit_position": 12,
+      "description": "将模型均匀分为16个分层，执行前12个submodel（0-11号）"
+    },
+    {
+      "name": "16分层-早退位置8",
+      "num_partitions": 16,
+      "strategy_type": "SINGLE_DEVICE",
+      "custom_boundaries": null,
+      "exit_position": 8,
+      "description": "将模型均匀分为16个分层，执行前8个submodel（0-7号）"
     },
     {
       "name": "4分层-早退位置3",
@@ -31,6 +71,14 @@
       "custom_boundaries": null,
       "exit_position": 3,
       "description": "将模型均匀分为4个分层，执行前3个submodel（0-2号）"
+    },
+    {
+      "name": "4分层-早退位置2",
+      "num_partitions": 4,
+      "strategy_type": "SINGLE_DEVICE",
+      "custom_boundaries": null,
+      "exit_position": 2,
+      "description": "将模型均匀分为4个分层，执行前2个submodel（0-1号）"
     }
   ]
 } 

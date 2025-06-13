@@ -1,76 +1,108 @@
 {
   "strategies": [
     {
-      "name": "16分层-正常推理",
+      "name": "32分层-均匀",
+      "num_partitions": 32,
+      "strategy_type": "SINGLE_DEVICE",
+      "custom_boundaries": null,
+      "exit_position": null,
+      "description": "将模型均匀分为32个分层，正常推理到最后一层"
+    },
+    {
+      "name": "32分层-早退位置31",
+      "num_partitions": 32,
+      "strategy_type": "SINGLE_DEVICE",
+      "custom_boundaries": null,
+      "exit_position": 31,
+      "description": "将模型均匀分为32个分层，执行前31个submodel（0-30号）"
+    },
+    {
+      "name": "32分层-早退位置16",
+      "num_partitions": 32,
+      "strategy_type": "SINGLE_DEVICE",
+      "custom_boundaries": null,
+      "exit_position": 16,
+      "description": "将模型均匀分为32个分层，执行前16个submodel（0-15号）"
+    },
+    {
+      "name": "32分层-早退位置8",
+      "num_partitions": 32,
+      "strategy_type": "SINGLE_DEVICE",
+      "custom_boundaries": null,
+      "exit_position": 8,
+      "description": "将模型均匀分为32个分层，执行前8个submodel（0-7号）"
+    },
+    {
+      "name": "16分层-均匀",
       "num_partitions": 16,
       "strategy_type": "SINGLE_DEVICE",
       "custom_boundaries": null,
       "exit_position": null,
-      "description": "16分层均匀分割，正常推理到最后"
+      "description": "将模型均匀分为16个分层，正常推理到最后一层"
     },
     {
-      "name": "16分层-早退位置1",
+      "name": "16分层-早退位置12",
       "num_partitions": 16,
       "strategy_type": "SINGLE_DEVICE",
       "custom_boundaries": null,
-      "exit_position": 1,
-      "description": "16分层均匀分割，执行前1个submodel（0号）"
+      "exit_position": 12,
+      "description": "将模型均匀分为16个分层，执行前12个submodel（0-11号）"
     },
     {
-      "name": "16分层-早退位置3",
+      "name": "16分层-早退位置8",
       "num_partitions": 16,
+      "strategy_type": "SINGLE_DEVICE",
+      "custom_boundaries": null,
+      "exit_position": 8,
+      "description": "将模型均匀分为16个分层，执行前8个submodel（0-7号）"
+    },
+    {
+      "name": "8分层-均匀",
+      "num_partitions": 8,
+      "strategy_type": "SINGLE_DEVICE",
+      "custom_boundaries": null,
+      "exit_position": null,
+      "description": "将模型均匀分为8个分层，正常推理到最后一层"
+    },
+    {
+      "name": "8分层-早退位置6",
+      "num_partitions": 8,
+      "strategy_type": "SINGLE_DEVICE",
+      "custom_boundaries": null,
+      "exit_position": 6,
+      "description": "将模型均匀分为8个分层，执行前6个submodel（0-5号）"
+    },
+    {
+      "name": "8分层-早退位置4",
+      "num_partitions": 8,
+      "strategy_type": "SINGLE_DEVICE",
+      "custom_boundaries": null,
+      "exit_position": 4,
+      "description": "将模型均匀分为8个分层，执行前4个submodel（0-3号）"
+    },
+    {
+      "name": "4分层-均匀",
+      "num_partitions": 4,
+      "strategy_type": "SINGLE_DEVICE",
+      "custom_boundaries": null,
+      "exit_position": null,
+      "description": "将模型均匀分为4个分层，正常推理到最后一层"
+    },
+    {
+      "name": "4分层-早退位置3",
+      "num_partitions": 4,
       "strategy_type": "SINGLE_DEVICE",
       "custom_boundaries": null,
       "exit_position": 3,
-      "description": "16分层均匀分割，执行前3个submodel（0-2号）"
+      "description": "将模型均匀分为4个分层，执行前3个submodel（0-2号）"
     },
     {
-      "name": "16分层-早退位置7",
-      "num_partitions": 16,
+      "name": "4分层-早退位置2",
+      "num_partitions": 4,
       "strategy_type": "SINGLE_DEVICE",
       "custom_boundaries": null,
-      "exit_position": 7,
-      "description": "16分层均匀分割，执行前7个submodel（0-6号）"
-    },
-    {
-      "name": "32分层-正常推理",
-      "num_partitions": 32,
-      "strategy_type": "SINGLE_DEVICE",
-      "custom_boundaries": null,
-      "exit_position": null,
-      "description": "32分层均匀分割，正常推理到最后"
-    },
-    {
-      "name": "32分层-早退位置1",
-      "num_partitions": 32,
-      "strategy_type": "SINGLE_DEVICE",
-      "custom_boundaries": null,
-      "exit_position": 1,
-      "description": "32分层均匀分割，执行前1个submodel（0号）"
-    },
-    {
-      "name": "32分层-早退位置7",
-      "num_partitions": 32,
-      "strategy_type": "SINGLE_DEVICE",
-      "custom_boundaries": null,
-      "exit_position": 7,
-      "description": "32分层均匀分割，执行前7个submodel（0-6号）"
-    },
-    {
-      "name": "32分层-早退位置15",
-      "num_partitions": 32,
-      "strategy_type": "SINGLE_DEVICE",
-      "custom_boundaries": null,
-      "exit_position": 15,
-      "description": "32分层均匀分割，执行前15个submodel（0-14号）"
-    },
-    {
-      "name": "8分层-自定义边界-早退位置2",
-      "num_partitions": 8,
-      "strategy_type": "SINGLE_DEVICE",
-      "custom_boundaries": [[0, 3], [4, 7], [8, 11], [12, 15], [16, 19], [20, 23], [24, 27], [28, 31]],
       "exit_position": 2,
-      "description": "8分层自定义边界，执行前2个submodel（0-1号）"
+      "description": "将模型均匀分为4个分层，执行前2个submodel（0-1号）"
     }
   ]
 } 
