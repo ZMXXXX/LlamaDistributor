@@ -1,4 +1,0 @@
-[console_scripts]
-llamadist-analyze = llamadist.cli.analyze:main
-llamadist-inference = llamadist.cli.inference:main
-llamadist-partition = llamadist.cli.partition:main
