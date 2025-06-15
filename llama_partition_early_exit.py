@@ -16,7 +16,9 @@ from transformers import LlamaTokenizer, LlamaForCausalLM
 import torch.nn.functional as F
 import matplotlib
 from tabulate import tabulate
-
+import lm_eval
+from lm_eval.utils import setup_logging
+from lm_eval.models.huggingface import HFLM
 # 添加项目路径
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
@@ -238,6 +240,24 @@ def benchmark_baseline_inference(
     load_time = time.time() - load_start_time
     print(f"原始模型加载完成，耗时: {load_time:.2f}秒")
 
+    setup_logging("DEBUG")
+    lm = HFLM(
+        pretrained=model,
+        tokenizer=tokenizer,
+        device=device
+    )
+
+    eva_results = lm_eval.simple_evaluate(
+        model=lm,
+        model_args={"max_new_tokens": max_new_tokens},
+        tasks=["arc_easy"],
+        batch_size=1,
+        num_fewshot=0
+    )
+
+    eva_acc = eva_results['results']['arc_easy']['acc_norm,none']
+    print(f"arc_easy评估准确率: {eva_acc}")
+
     # 初始化性能指标
     total_tokens_generated = 0  # 生成的总token数
     total_decode_time = 0  # 解码时间（逐token生成时间）
@@ -315,7 +335,7 @@ def benchmark_baseline_inference(
         average_throughput = 0
         average_latency = 0
         average_first_token_latency = 0
-
+        
     # 打印结果
     print(f"\n=== 完整模型推理测试结果 ===")
     print(f"模型加载时间: {load_time:.3f}秒")
