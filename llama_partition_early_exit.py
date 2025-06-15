@@ -19,6 +19,13 @@ from tabulate import tabulate
 import lm_eval
 from lm_eval.utils import setup_logging
 from lm_eval.models.huggingface import HFLM
+
+from datasets import load_dataset
+
+# Login using e.g. `huggingface-cli login` to access this dataset
+aime_dataset = load_dataset("Maxwell-Jia/AIME_2024")
+
+
 # 添加项目路径
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
@@ -30,6 +37,85 @@ from llamadist import (
     StrategyType
 )
 from llamadist.inference.coordinator import GenerationConfig
+
+# 新增：lm_eval适配器类
+class PartitionModelWrapper:
+    """
+    分割模型包装器，使SingleDeviceInference兼容lm_eval接口
+    """
+    
+    def __init__(self, inference_engine: SingleDeviceInference, tokenizer, config):
+        self.inference_engine = inference_engine
+        self.tokenizer = tokenizer
+        self.config = config
+        self.device = inference_engine.device
+        
+        # 确保vocab_size存在
+        if hasattr(config, 'vocab_size'):
+            self.vocab_size = config.vocab_size
+        else:
+            self.vocab_size = len(tokenizer.get_vocab())
+    
+    def forward(self, input_ids, attention_mask=None, **kwargs):
+        """
+        前向传播，返回符合transformers模型输出格式的结果
+        """
+        # 调用分割推理引擎
+        with torch.no_grad():
+            outputs = self.inference_engine.forward_pass(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                past_key_values=kwargs.get('past_key_values'),
+                use_cache=kwargs.get('use_cache', True),
+                exit_position=self.inference_engine.generation_config.exit_position
+            )
+        
+        # 包装成类似transformers.CausalLMOutput的格式
+        class ModelOutput:
+            def __init__(self, logits, hidden_states=None, past_key_values=None):
+                self.logits = logits
+                self.hidden_states = hidden_states  
+                self.past_key_values = past_key_values
+                
+        return ModelOutput(
+            logits=outputs.get('logits'),
+            hidden_states=outputs.get('hidden_states'),
+            past_key_values=outputs.get('past_key_values')
+        )
+    
+    def generate(self, input_ids, **kwargs):
+        """
+        生成文本，兼容transformers接口
+        """
+        # 提取generation相关参数
+        generation_config = GenerationConfig(
+            max_new_tokens=kwargs.get('max_new_tokens', self.inference_engine.generation_config.max_new_tokens),
+            temperature=kwargs.get('temperature', self.inference_engine.generation_config.temperature),
+            top_p=kwargs.get('top_p', self.inference_engine.generation_config.top_p),
+            do_sample=kwargs.get('do_sample', self.inference_engine.generation_config.do_sample),
+            eos_token_id=kwargs.get('eos_token_id', self.inference_engine.generation_config.eos_token_id),
+            pad_token_id=kwargs.get('pad_token_id', self.inference_engine.generation_config.pad_token_id),
+            exit_position=self.inference_engine.generation_config.exit_position
+        )
+        
+        return self.inference_engine.generate(
+            input_ids=input_ids,
+            generation_config=generation_config,
+            tokenizer=self.tokenizer
+        )
+    
+    def to(self, device):
+        """设备转换"""
+        return self  # SingleDeviceInference已经处理了设备管理
+    
+    def eval(self):
+        """设置为评估模式"""
+        return self
+    
+    def __call__(self, *args, **kwargs):
+        """使对象可调用，转发到forward方法"""
+        return self.forward(*args, **kwargs)
+
 
 # 全局测试参数
 test_prompts = [
@@ -258,10 +344,20 @@ def benchmark_baseline_inference(
     eva_acc = eva_results['results']['arc_easy']['acc_norm,none']
     print(f"arc_easy评估准确率: {eva_acc}")
 
+    # 🔧 清理评估相关对象以释放显存
+    del lm
+    del eva_results
+    import gc
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+    print("✅ 已清理baseline评估相关对象")
+
     # 初始化性能指标
     total_tokens_generated = 0  # 生成的总token数
     total_decode_time = 0  # 解码时间（逐token生成时间）
-    peak_memory_usage = 0  # 峰值内存使用
+    # peak_memory_usage = 0  # 峰值内存使用
     first_token_latencies = []  # 每个prompt的首token延迟
     total_generation_time = 0 # 总生成时间
 
@@ -308,9 +404,9 @@ def benchmark_baseline_inference(
                 total_tokens_generated += 1
 
                 # 监控内存使用（每隔几个token检查一次即可）
-                if token_idx % 10 == 0:
-                    current_memory_usage = torch.cuda.memory_allocated() / 1024**2
-                    peak_memory_usage = max(peak_memory_usage, current_memory_usage)
+                # if token_idx % 10 == 0:
+                #     current_memory_usage = torch.cuda.memory_allocated() / 1024**2
+                #     peak_memory_usage = max(peak_memory_usage, current_memory_usage)
 
        
         # 解码和显示生成的文本
@@ -345,7 +441,7 @@ def benchmark_baseline_inference(
     print(f"平均吞吐量: {average_throughput:.3f} tokens/秒")
     print(f"平均每token生成延迟: {average_latency*1000:.3f}毫秒/token")
     print(f"平均首token延迟(TTFT): {average_first_token_latency*1000:.3f}毫秒")
-    print(f"峰值GPU内存使用: {peak_memory_usage:.3f}MB")
+    # print(f"峰值GPU内存使用: {peak_memory_usage:.3f}MB")
 
     return {
         "load_time": load_time,
@@ -355,7 +451,7 @@ def benchmark_baseline_inference(
         "average_throughput": average_throughput,
         "average_latency": average_latency,
         "average_first_token_latency": average_first_token_latency,
-        "peak_memory_usage": peak_memory_usage
+        "evaluation_accuracy": eva_acc  # 添加评估准确率
     }
 
 
@@ -438,6 +534,7 @@ def benchmark_partition_inference(
         )
         
         # 🔧 修复：为early-exit设置原始模型的权重
+        original_model = None  # 在外层声明，以便后续复用
         if strategy_exit_position is not None:
             print("检测到early-exit配置，正在获取原始模型权重...")
             # 临时加载原始模型以获取lm_head和norm权重
@@ -458,17 +555,81 @@ def benchmark_partition_inference(
                     # 为推理引擎设置原始norm权重
                     inference_engine._original_norm_weights = original_model.model.norm.weight.data.clone()
                     print("✅ 已设置原始norm权重")
-                
-                # 清理原始模型以释放内存
-                del original_model
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                print("✅ 已清理临时加载的原始模型")
                     
             except Exception as e:
                 print(f"⚠️  警告：无法加载原始模型权重，early-exit可能效果不佳: {e}")
 
         partition_time = time.time() - partition_start_time
+        
+        # 创建分割模型的lm_eval评估
+        print("开始lm_eval评估...")
+        partition_lm = None
+        partition_wrapper = None
+        partition_eva_results = None
+        
+        try:
+            # 如果还没有加载原始模型（非early-exit情况），需要加载以获取config
+            if original_model is None:
+                original_model = LlamaForCausalLM.from_pretrained(
+                    model_path,
+                    device_map="cpu",
+                    torch_dtype=torch.float16
+                )
+            
+            # 创建包装器
+            partition_wrapper = PartitionModelWrapper(
+                inference_engine=inference_engine,
+                tokenizer=tokenizer,
+                config=original_model.config
+            )
+            
+            # 创建HFLM实例
+            setup_logging("DEBUG")
+            partition_lm = HFLM(
+                pretrained=partition_wrapper,
+                tokenizer=tokenizer,
+                device=device
+            )
+            
+            # 执行评估
+            partition_eva_results = lm_eval.simple_evaluate(
+                model=partition_lm,
+                model_args={"max_new_tokens": max_new_tokens},
+                tasks=["arc_easy"],
+                batch_size=1,
+                num_fewshot=0
+            )
+            
+            partition_eva_acc = partition_eva_results['results']['arc_easy']['acc_norm,none']
+            print(f"分割模型 [{strategy['name']}] arc_easy评估准确率: {partition_eva_acc}")
+            
+        except Exception as e:
+            print(f"⚠️  分割模型评估失败: {e}")
+            partition_eva_acc = None
+        finally:
+            # 🔧 重要：无论是否成功，都要清理评估相关的对象以释放显存
+            if partition_lm is not None:
+                del partition_lm
+            if partition_wrapper is not None:
+                del partition_wrapper
+            if partition_eva_results is not None:
+                del partition_eva_results
+            print("✅ 已清理评估相关对象")
+        
+        # 清理原始模型以释放内存
+        if original_model is not None:
+            del original_model
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            print("✅ 已清理临时加载的原始模型")
+        
+        # 🔧 强制进行垃圾回收和GPU缓存清理
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()  # 等待所有CUDA操作完成
+        print("✅ 已执行垃圾回收和GPU缓存清理")
         
 
         for prompt in test_prompts:
@@ -504,7 +665,7 @@ def benchmark_partition_inference(
             "average_throughput": stats['tokens_per_second'],
             "average_latency": stats['total_generation_time']/stats['total_tokens_generated'],
             "average_first_token_latency": stats['total_time_to_first_token']/len(test_prompts),
-            "peak_memory_usage": 0  # 这里可以后续添加内存监控
+            "evaluation_accuracy": partition_eva_acc  # 添加评估准确率
         }
         
         all_results[strategy['name']] = strategy_result
@@ -560,7 +721,7 @@ def create_comparison_table(baseline_result: dict, partition_results: dict, benc
         ("平均吞吐量 (tokens/秒)", "average_throughput", "average_throughput"),
         ("平均每token延迟 (毫秒)", "average_latency", "average_latency"),
         ("平均首token延迟 (毫秒)", "average_first_token_latency", "average_first_token_latency"),
-        ("峰值内存使用 (MB)", "peak_memory_usage", "peak_memory_usage")
+        ("评估准确率 (arc_easy)", "evaluation_accuracy", "evaluation_accuracy")
     ]
     
     # 准备表格数据
@@ -585,6 +746,11 @@ def create_comparison_table(baseline_result: dict, partition_results: dict, benc
             row.append(f"{baseline_value:.3f}")
         elif metric_name == "生成token总数":
             row.append(f"{int(baseline_value)}")
+        elif "评估准确率" in metric_name:
+            if baseline_value is not None:
+                row.append(f"{baseline_value:.4f}")
+            else:
+                row.append("N/A")
         else:
             row.append(f"{baseline_value:.3f}")
         
@@ -600,6 +766,11 @@ def create_comparison_table(baseline_result: dict, partition_results: dict, benc
                 row.append(f"{partition_value:.3f}")
             elif metric_name == "生成token总数":
                 row.append(f"{int(partition_value)}")
+            elif "评估准确率" in metric_name:
+                if partition_value is not None:
+                    row.append(f"{partition_value:.4f}")
+                else:
+                    row.append("N/A")
             else:
                 row.append(f"{partition_value:.3f}")
         
@@ -653,7 +824,8 @@ def create_comparison_table(baseline_result: dict, partition_results: dict, benc
         ("平均吞吐量", "average_throughput", "average_throughput", "higher_is_better"),
         ("平均每token延迟", "average_latency", "average_latency", "lower_is_better"),
         ("平均首token延迟", "average_first_token_latency", "average_first_token_latency", "lower_is_better"),
-        ("总生成时间", "total_generation_time", "total_generation_time", "lower_is_better")
+        ("总生成时间", "total_generation_time", "total_generation_time", "lower_is_better"),
+        ("评估准确率", "evaluation_accuracy", "evaluation_accuracy", "higher_is_better")
     ]
     
     for metric_name, baseline_key, partition_key, direction in key_metrics:
@@ -663,7 +835,15 @@ def create_comparison_table(baseline_result: dict, partition_results: dict, benc
         for strategy_name, strategy_result in partition_results.items():
             partition_value = strategy_result.get(partition_key, 0)
             
-            if baseline_value != 0:
+            # 特殊处理评估准确率（可能为None）
+            if "评估准确率" in metric_name:
+                if baseline_value is not None and partition_value is not None:
+                    change_percent = ((partition_value - baseline_value) / baseline_value) * 100
+                    status = "↑" if change_percent > 0 else "↓"
+                    row.append(f"{change_percent:+.2f}% {status}")
+                else:
+                    row.append("N/A")
+            elif baseline_value != 0:
                 change_percent = ((partition_value - baseline_value) / baseline_value) * 100
                 
                 # 根据指标方向确定是改进还是退化
